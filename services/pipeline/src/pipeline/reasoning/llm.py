@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json as _json
 import os
 import time
 from typing import Optional
-import hashlib
-import json as _json
 
 from loguru import logger
+
+from ..infra.metrics import push_values
 
 
 def call_openai_json(
@@ -32,7 +34,7 @@ def call_openai_json(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
-        model_name = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        model_name = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
         # Cache lookup
         ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
         key = _hash_key("openai", model_name, system_prompt, user_prompt)
@@ -71,7 +73,8 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
     callers can combine with call_openai_json if desired.
     """
     import json
-    import requests
+
+    import requests  # type: ignore
 
     global _LLM_CALLS, _LLM_CACHE_HITS, _LLM_FAILURES
     url = os.getenv(url_env)
@@ -83,61 +86,7 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
     timeout = float(os.getenv("FLOWISE_TIMEOUT_SEC", "15"))
     max_retries = int(os.getenv("FLOWISE_MAX_RETRIES", "2"))
     backoff = float(os.getenv("FLOWISE_BACKOFF_SEC", "1.0"))
-from ..infra.metrics import push_values
 
-# Simple in-process budget and counters
-_LLM_CALLS = 0
-_LLM_CACHE_HITS = 0
-_LLM_FAILURES = 0
-
-
-def _hash_key(*parts: str) -> str:
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p.encode("utf-8", errors="ignore"))
-    return h.hexdigest()
-
-
-def _try_cache_get(key: str) -> Optional[dict]:
-    if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
-        return None
-    try:
-        import redis  # type: ignore
-        r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=int(os.getenv("REDIS_PORT", "6379")), db=0)
-        raw = r.get(f"llm:{key}")
-        if not raw:
-            return None
-        data = _json.loads(raw)
-        return data
-    except Exception:
-        return None
-
-
-def _try_cache_put(key: str, data: dict, ttl: int) -> None:
-    if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
-        return
-    try:
-        import redis  # type: ignore
-        r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=int(os.getenv("REDIS_PORT", "6379")), db=0)
-        r.setex(f"llm:{key}", ttl, _json.dumps(data))
-    except Exception:
-        pass
-
-
-def _rate_limited() -> bool:
-    budget = int(os.getenv("LLM_CALLS_BUDGET", "8"))
-    return _LLM_CALLS >= budget
-
-
-def _push_metrics():
-    try:
-        push_values(job="llm", values={
-            "llm_calls": float(_LLM_CALLS),
-            "llm_cache_hits": float(_LLM_CACHE_HITS),
-            "llm_failures": float(_LLM_FAILURES),
-        }, labels={})
-    except Exception:
-        pass
     # Cache
     ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
     key = _hash_key("flowise", url_env, _json.dumps(payload, ensure_ascii=False))
@@ -146,6 +95,7 @@ def _push_metrics():
         _LLM_CACHE_HITS += 1
         _push_metrics()
         return cached
+
     for attempt in range(max_retries + 1):
         try:
             r = requests.post(url, json=payload, timeout=timeout)
@@ -167,7 +117,7 @@ def _push_metrics():
                 return {"text": r.text}
         except Exception as e:  # noqa: BLE001
             if attempt < max_retries:
-                sleep_for = backoff * (2 ** attempt)
+                sleep_for = backoff * (2**attempt)
                 logger.warning(
                     f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s"
                 )
@@ -177,3 +127,74 @@ def _push_metrics():
             _LLM_FAILURES += 1
             _push_metrics()
             return None
+
+    return None
+
+
+# Simple in-process budget and counters
+_LLM_CALLS = 0
+_LLM_CACHE_HITS = 0
+_LLM_FAILURES = 0
+
+
+def _hash_key(*parts: str) -> str:
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(p.encode("utf-8", errors="ignore"))
+    return h.hexdigest()
+
+
+def _try_cache_get(key: str) -> Optional[dict]:
+    if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
+        return None
+    try:
+        import redis  # type: ignore
+
+        r = redis.Redis(
+            host=os.getenv("REDIS_HOST", "redis"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=0,
+        )
+        raw = r.get(f"llm:{key}")
+        if not raw:
+            return None
+        data = _json.loads(raw)
+        return data
+    except Exception:
+        return None
+
+
+def _try_cache_put(key: str, data: dict, ttl: int) -> None:
+    if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
+        return
+    try:
+        import redis  # type: ignore
+
+        r = redis.Redis(
+            host=os.getenv("REDIS_HOST", "redis"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=0,
+        )
+        r.setex(f"llm:{key}", ttl, _json.dumps(data))
+    except Exception:
+        pass
+
+
+def _rate_limited() -> bool:
+    budget = int(os.getenv("LLM_CALLS_BUDGET", "8"))
+    return _LLM_CALLS >= budget
+
+
+def _push_metrics():
+    try:
+        push_values(
+            job="llm",
+            values={
+                "llm_calls": float(_LLM_CALLS),
+                "llm_cache_hits": float(_LLM_CACHE_HITS),
+                "llm_failures": float(_LLM_FAILURES),
+            },
+            labels={},
+        )
+    except Exception:
+        pass
