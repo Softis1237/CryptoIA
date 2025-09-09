@@ -19,23 +19,31 @@ def call_openai_json(
 ) -> Optional[dict]:
     """Call OpenAI Chat Completions expecting a JSON object response.
 
-    Returns None if OPENAI_API_KEY is not set or on failure.
+    Returns ``None`` if ``OPENAI_API_KEY`` is not set or on failure.
     """
+
     global _LLM_CALLS, _LLM_CACHE_HITS, _LLM_FAILURES
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.warning("OPENAI_API_KEY not set — LLM call skipped (fallback)")
         return None
+
     if _rate_limited():
         logger.warning("LLM budget exceeded — skipping OpenAI call")
         return None
+
     try:
-        # openai>=1.x client
-        from openai import OpenAI
+        from openai import OpenAI  # type: ignore[import-untyped]
 
         client = OpenAI(api_key=api_key)
+
+        model_name: str = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+
+
         model_name = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
         # Cache lookup
+
         ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
         key = _hash_key("openai", model_name, system_prompt, user_prompt)
         cached = _try_cache_get(key)
@@ -43,6 +51,7 @@ def call_openai_json(
             _LLM_CACHE_HITS += 1
             _push_metrics()
             return cached
+
         resp = client.chat.completions.create(
             model=model_name,
             temperature=temperature,
@@ -67,27 +76,36 @@ def call_openai_json(
 
 
 def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
-    """Call Flowise endpoint specified by env var (URL), expect JSON back.
+    """Call Flowise endpoint specified by ``url_env`` and return JSON.
 
-    Returns None if not configured or on error. No OpenAI fallback here —
-    callers can combine with call_openai_json if desired.
+    Returns ``None`` if the endpoint is not configured or on error.
     """
+
     import json
+
+
+    import requests  # type: ignore[import-untyped]
 
     import requests  # type: ignore
 
+
     global _LLM_CALLS, _LLM_CACHE_HITS, _LLM_FAILURES
+
     url = os.getenv(url_env)
     if not url:
         return None
+
     if _rate_limited():
         logger.warning("LLM budget exceeded — skipping Flowise call")
         return None
+
     timeout = float(os.getenv("FLOWISE_TIMEOUT_SEC", "15"))
     max_retries = int(os.getenv("FLOWISE_MAX_RETRIES", "2"))
     backoff = float(os.getenv("FLOWISE_BACKOFF_SEC", "1.0"))
 
+
     # Cache
+
     ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
     key = _hash_key("flowise", url_env, _json.dumps(payload, ensure_ascii=False))
     cached = _try_cache_get(key)
@@ -100,6 +118,19 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
         try:
             r = requests.post(url, json=payload, timeout=timeout)
             r.raise_for_status()
+
+            if r.headers.get("content-type", "").startswith("application/json"):
+                data = r.json()
+            else:
+                try:
+                    data = json.loads(r.text)
+                except Exception:
+                    data = {"text": r.text}
+            _LLM_CALLS += 1
+            _try_cache_put(key, data, ttl)
+            _push_metrics()
+            return data
+
             # Some Flowise nodes return stringified JSON
             if r.headers.get("content-type", "").startswith("application/json"):
                 data = r.json()
@@ -115,11 +146,16 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
                 return data
             except Exception:
                 return {"text": r.text}
+
         except Exception as e:  # noqa: BLE001
             if attempt < max_retries:
                 sleep_for = backoff * (2**attempt)
                 logger.warning(
+
+                    f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s",
+
                     f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s"
+
                 )
                 time.sleep(sleep_for)
                 continue
@@ -127,6 +163,7 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
             _LLM_FAILURES += 1
             _push_metrics()
             return None
+
 
     return None
 
@@ -148,7 +185,11 @@ def _try_cache_get(key: str) -> Optional[dict]:
     if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
         return None
     try:
+
+        import redis  # type: ignore[import-untyped]
+
         import redis  # type: ignore
+
 
         r = redis.Redis(
             host=os.getenv("REDIS_HOST", "redis"),
@@ -168,7 +209,11 @@ def _try_cache_put(key: str, data: dict, ttl: int) -> None:
     if os.getenv("ENABLE_LLM_CACHE", "1") not in {"1", "true", "True"}:
         return
     try:
+
+        import redis  # type: ignore[import-untyped]
+
         import redis  # type: ignore
+
 
         r = redis.Redis(
             host=os.getenv("REDIS_HOST", "redis"),
@@ -185,7 +230,7 @@ def _rate_limited() -> bool:
     return _LLM_CALLS >= budget
 
 
-def _push_metrics():
+def _push_metrics() -> None:
     try:
         push_values(
             job="llm",

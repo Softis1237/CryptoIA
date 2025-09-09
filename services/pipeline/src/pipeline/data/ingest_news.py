@@ -31,8 +31,11 @@ class IngestNewsInput(BaseModel):
     slot: str
     time_window_hours: int = 12
     query: str = "crypto OR bitcoin"
+
+
     news_signals: List[dict] = Field(default_factory=list)
     news_facts: Optional[List[dict]] = None
+
 
 
 class IngestNewsOutput(BaseModel):
@@ -57,22 +60,32 @@ def _sentiment(text: str) -> tuple[str, float]:
 
 def _fetch_from_cryptopanic(since_ts: int, api_key: str) -> List[dict]:
     url = "https://cryptopanic.com/api/v1/posts/"
-    params = {"auth_token": api_key, "public": "true", "kind": "news", "filter": "rising", "since": since_ts}
+    params = {
+        "auth_token": api_key,
+        "public": "true",
+        "kind": "news",
+        "filter": "rising",
+        "since": since_ts,
+    }
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
     data = r.json().get("results", [])
     items = []
     for item in data:
-        items.append({
-            "ts": item.get("published_at"),
-            "title": item.get("title", ""),
-            "url": item.get("url", ""),
-            "source": item.get("source", {}).get("domain", ""),
-        })
+        items.append(
+            {
+                "ts": item.get("published_at"),
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "source": item.get("source", {}).get("domain", ""),
+            }
+        )
     return items
 
 
-def _fetch_from_newsapi(start: datetime, end: datetime, api_key: str, query: str) -> List[dict]:
+def _fetch_from_newsapi(
+    start: datetime, end: datetime, api_key: str, query: str
+) -> List[dict]:
     url = "https://newsapi.org/v2/everything"
     params = {
         "apiKey": api_key,
@@ -88,12 +101,14 @@ def _fetch_from_newsapi(start: datetime, end: datetime, api_key: str, query: str
     data = r.json().get("articles", [])
     items = []
     for item in data:
-        items.append({
-            "ts": item.get("publishedAt"),
-            "title": item.get("title", ""),
-            "url": item.get("url", ""),
-            "source": item.get("source", {}).get("name", ""),
-        })
+        items.append(
+            {
+                "ts": item.get("publishedAt"),
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "source": item.get("source", {}).get("name", ""),
+            }
+        )
     return items
 
 
@@ -123,14 +138,16 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             ts_int = int(pd.to_datetime(ts_raw, utc=True).timestamp())
         except Exception:
             ts_int = int(now.timestamp())
-        signals.append(NewsSignal(
-            ts=ts_int,
-            title=r.get("title", ""),
-            url=r.get("url", ""),
-            source=r.get("source", ""),
-            sentiment=sent,
-            impact_score=impact,
-        ))
+        signals.append(
+            NewsSignal(
+                ts=ts_int,
+                title=r.get("title", ""),
+                url=r.get("url", ""),
+                source=r.get("source", ""),
+                sentiment=sent,
+                impact_score=impact,
+            )
+        )
 
     news_facts = extract_news_facts_batch([s.model_dump() for s in signals]) or None
 
