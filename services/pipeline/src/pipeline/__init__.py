@@ -1,3 +1,10 @@
+ codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
+"""Core pipeline package."""
+
+from __future__ import annotations
+
+__all__: list[str] = []
+
  codex/get-provider-in-modules
 """Pipeline package."""
 
@@ -15,7 +22,5 @@ codex/create-ingest_onchain.py-for-metrics
 
 __all__: list[str] = []
 
- main
- main
- main
- main
+
+main

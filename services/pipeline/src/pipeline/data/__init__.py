@@ -1,3 +1,7 @@
+ codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
+"""Data ingestion modules."""
+
+
  codex/get-provider-in-modules
 """Data ingestion package."""
 
@@ -14,6 +18,7 @@ from .ingest_news import IngestNewsInput, IngestNewsOutput, run
 __all__ = ["IngestNewsInput", "IngestNewsOutput", "run"]
 
 codex/create-ingest_news.py-and-data-models
+ main
 from .ingest_news import IngestNewsInput, IngestNewsOutput, run
 
 from .ingest_news import IngestNewsInput, IngestNewsOutput
@@ -59,5 +64,8 @@ __all__ = [
     "ingest_prices_lowtf",
  main
 ]
+ codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
+
  main
- main
+
+

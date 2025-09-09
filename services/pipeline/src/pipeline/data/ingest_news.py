@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests  # type: ignore[import-untyped]
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from textblob import TextBlob
 
 from ..infra.s3 import upload_bytes
@@ -29,7 +29,12 @@ class IngestNewsInput(BaseModel):
     run_id: str
     slot: str
     time_window_hours: int = 12
+codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
+    news_signals: List[dict] = Field(default_factory=list)
+    news_facts: Optional[List[dict]] = None
+
     query: str = "crypto OR bitcoin"
+ main
 
 
 class IngestNewsOutput(BaseModel):
@@ -145,7 +150,11 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
     table = pa.Table.from_pandas(df)
     buf = io.BytesIO()
     pq.write_table(table, buf)
+ codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
+    date_key = now.strftime("%Y-%m-%d")
+
     date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+ main
     key = f"runs/{date_key}/{inp.slot}/news.parquet"
     news_path_s3 = upload_bytes(key, buf.getvalue(), "application/x-parquet")
     return IngestNewsOutput(
