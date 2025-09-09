@@ -19,6 +19,10 @@ build/
 data/
 artifacts/
 
+# allow tracked pipeline data modules
+!services/pipeline/src/pipeline/data/
+!services/pipeline/src/pipeline/data/**
+
 # OS
 .DS_Store
 Thumbs.db
