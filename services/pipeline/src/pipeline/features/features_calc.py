@@ -1,32 +1,29 @@
 from __future__ import annotations
 
-import json
-import sys
-from dataclasses import dataclass
 import os
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Dict, Any
+import sys
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel
-from loguru import logger
+from pydantic import BaseModel, Field
 
 from ..infra.s3 import download_bytes, upload_bytes
-from .features_kats import enrich_with_kats
 from .features_cpd import enrich_with_cpd_simple
+from .features_kats import enrich_with_kats
 
 
 class FeaturesCalcInput(BaseModel):
     prices_path_s3: str
-    news_signals: List[dict] = []
-    news_facts: List[dict] = []
+    news_signals: List[dict] = Field(default_factory=list)
+    news_facts: List[dict] = Field(default_factory=list)
     # Optional enrichments
     orderbook_meta: Optional[Dict[str, Any]] = None
-    onchain_signals: List[dict] = []
-    social_signals: List[dict] = []
+    onchain_signals: List[dict] = Field(default_factory=list)
+    social_signals: List[dict] = Field(default_factory=list)
     regime_hint: Optional[str] = None  # if known from previous run
-    macro_flags: List[str] = []  # e.g., ["CPI", "FOMC"]
+    macro_flags: List[str] = Field(default_factory=list)  # e.g., ["CPI", "FOMC"]
     social_window_minutes: int = 180
     run_id: Optional[str] = None
     slot: Optional[str] = None
@@ -46,8 +43,12 @@ def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     up = np.where(delta > 0, delta, 0.0)
     down = np.where(delta < 0, -delta, 0.0)
-    roll_up = pd.Series(up, index=close.index).ewm(alpha=1 / period, adjust=False).mean()
-    roll_down = pd.Series(down, index=close.index).ewm(alpha=1 / period, adjust=False).mean()
+    roll_up = (
+        pd.Series(up, index=close.index).ewm(alpha=1 / period, adjust=False).mean()
+    )
+    roll_down = (
+        pd.Series(down, index=close.index).ewm(alpha=1 / period, adjust=False).mean()
+    )
     rs = roll_up / (roll_down + 1e-9)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return rsi
@@ -57,7 +58,9 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     high = df["high"]
     low = df["low"]
     close = df["close"].shift(1)
-    tr = pd.concat([(high - low), (high - close).abs(), (low - close).abs()], axis=1).max(axis=1)
+    tr = pd.concat(
+        [(high - low), (high - close).abs(), (low - close).abs()], axis=1
+    ).max(axis=1)
     atr = tr.ewm(alpha=1 / period, adjust=False).mean()
     return atr
 
@@ -66,7 +69,9 @@ def _sma(series: pd.Series, window: int) -> pd.Series:
     return series.rolling(window).mean()
 
 
-def _macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[pd.Series, pd.Series, pd.Series]:
+def _macd(
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
     macd = ema_fast - ema_slow
@@ -75,7 +80,9 @@ def _macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> 
     return macd, macd_signal, macd_hist
 
 
-def _bollinger(close: pd.Series, window: int = 20, num_std: float = 2.0) -> tuple[pd.Series, pd.Series, pd.Series]:
+def _bollinger(
+    close: pd.Series, window: int = 20, num_std: float = 2.0
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     ma = close.rolling(window).mean()
     std = close.rolling(window).std(ddof=0)
     upper = ma + num_std * std
@@ -84,7 +91,9 @@ def _bollinger(close: pd.Series, window: int = 20, num_std: float = 2.0) -> tupl
     return upper, lower, width
 
 
-def _stochastic(df: pd.DataFrame, k_window: int = 14, d_window: int = 3) -> tuple[pd.Series, pd.Series]:
+def _stochastic(
+    df: pd.DataFrame, k_window: int = 14, d_window: int = 3
+) -> tuple[pd.Series, pd.Series]:
     low_min = df["low"].rolling(k_window).min()
     high_max = df["high"].rolling(k_window).max()
     denom = (high_max - low_min).replace(0, np.nan)
@@ -107,12 +116,18 @@ def _heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + ha["ha_close"].iloc[i - 1]) / 2.0)
     ha["ha_open"] = pd.Series(ha_open, index=df.index)
-    ha["ha_high"] = pd.concat([df["high"], ha["ha_open"], ha["ha_close"]], axis=1).max(axis=1)
-    ha["ha_low"] = pd.concat([df["low"], ha["ha_open"], ha["ha_close"]], axis=1).min(axis=1)
+    ha["ha_high"] = pd.concat([df["high"], ha["ha_open"], ha["ha_close"]], axis=1).max(
+        axis=1
+    )
+    ha["ha_low"] = pd.concat([df["low"], ha["ha_open"], ha["ha_close"]], axis=1).min(
+        axis=1
+    )
     return ha
 
 
-def _volume_profile_features(df: pd.DataFrame, window: int = 240, bins: int = 24) -> Dict[str, float]:
+def _volume_profile_features(
+    df: pd.DataFrame, window: int = 240, bins: int = 24
+) -> Dict[str, float]:
     """Approximate Volume Profile on last window using bar VWAP as proxy per-bar price.
 
     Returns dict with vpoc price, deviation from close, and value area width.
@@ -122,12 +137,16 @@ def _volume_profile_features(df: pd.DataFrame, window: int = 240, bins: int = 24
         if len(x) < max(20, bins):
             return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
         # proxy price per bar: typical price
-        price = (x["high"].astype(float) + x["low"].astype(float) + x["close"].astype(float)) / 3.0
+        price = (
+            x["high"].astype(float) + x["low"].astype(float) + x["close"].astype(float)
+        ) / 3.0
         vol = x.get("volume", pd.Series([0.0] * len(x), index=x.index)).astype(float)
         pmin, pmax = float(price.min()), float(price.max())
         if not (pmax > pmin and vol.sum() > 0):
             return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
-        hist, edges = np.histogram(price.values, bins=bins, range=(pmin, pmax), weights=vol.values)
+        hist, edges = np.histogram(
+            price.values, bins=bins, range=(pmin, pmax), weights=vol.values
+        )
         if hist.sum() <= 0:
             return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
         idx = int(np.argmax(hist))
@@ -136,30 +155,33 @@ def _volume_profile_features(df: pd.DataFrame, window: int = 240, bins: int = 24
         vpoc_dev_pct = (close - vpoc) / max(1e-9, close)
         # value area: 70% of volume around VPOC by greedy expansion
         target = 0.7 * hist.sum()
-        l = r = idx
+        left_idx = right_idx = idx
         total = hist[idx]
-        while total < target and (l > 0 or r < len(hist) - 1):
+        while total < target and (left_idx > 0 or right_idx < len(hist) - 1):
             # expand to the side with larger next bin
-            left_val = hist[l - 1] if l > 0 else -1
-            right_val = hist[r + 1] if r < len(hist) - 1 else -1
+            left_val = hist[left_idx - 1] if left_idx > 0 else -1
+            right_val = hist[right_idx + 1] if right_idx < len(hist) - 1 else -1
             if right_val >= left_val:
-                r = min(len(hist) - 1, r + 1)
-                total += hist[r]
+                right_idx = min(len(hist) - 1, right_idx + 1)
+                total += hist[right_idx]
             else:
-                l = max(0, l - 1)
-                total += hist[l]
-        va_low = float(edges[l])
-        va_high = float(edges[r + 1])
+                left_idx = max(0, left_idx - 1)
+                total += hist[left_idx]
+        va_low = float(edges[left_idx])
+        va_high = float(edges[right_idx + 1])
         va_width_pct = (va_high - va_low) / max(1e-9, close)
-        return {"vpoc_dev_pct": float(vpoc_dev_pct), "va_width_pct": float(va_width_pct)}
+        return {
+            "vpoc_dev_pct": float(vpoc_dev_pct),
+            "va_width_pct": float(va_width_pct),
+        }
     except Exception:
         return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
 
 
 def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     raw = download_bytes(payload.prices_path_s3)
-    import pyarrow.parquet as pq
     import pyarrow as pa
+    import pyarrow.parquet as pq
 
     table = pq.read_table(pa.BufferReader(raw))
     df = table.to_pandas()
@@ -192,7 +214,9 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         df["vwap"] = _vwap(df)
         # volume z-score (rolling 50)
         vol = df["volume"].astype(float)
-        df["volume_z"] = (vol - vol.rolling(50).mean()) / (vol.rolling(50).std(ddof=0) + 1e-9)
+        df["volume_z"] = (vol - vol.rolling(50).mean()) / (
+            vol.rolling(50).std(ddof=0) + 1e-9
+        )
     else:
         df["vwap"] = df["close"]
         df["volume_z"] = 0.0
@@ -237,15 +261,28 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     # News facts features (LLM) — weighted sums and counts per type/direction
     try:
         import math as _m
+
         # Map src_id -> impact_score for weighting
-        _impact_map = {str(s.get("id")): float(s.get("impact_score", 0.0) or 0.0) for s in (payload.news_signals or [])}
+        _impact_map = {
+            str(s.get("id")): float(s.get("impact_score", 0.0) or 0.0)
+            for s in (payload.news_signals or [])
+        }
         now = datetime.now(timezone.utc)
         decay_h = float(os.getenv("NEWS_FACTS_DECAY_HOURS", "12"))
-        types = ["SEC_ACTION", "ETF_APPROVAL", "HACK", "FORK", "LISTING", "MACRO", "RUMOR_RETRACTION", "OTHER"]
+        types = [
+            "SEC_ACTION",
+            "ETF_APPROVAL",
+            "HACK",
+            "FORK",
+            "LISTING",
+            "MACRO",
+            "RUMOR_RETRACTION",
+            "OTHER",
+        ]
         dirs = ["bull", "bear", "volatility", "neutral"]
         sums: Dict[str, float] = {}
         cnts: Dict[str, int] = {}
-        for f in (payload.news_facts or []):
+        for f in payload.news_facts or []:
             try:
                 t = str(f.get("type", "OTHER")).upper()
                 if t not in types:
@@ -298,11 +335,22 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         df["ob_ask_levels"] = float(ob.get("ask_n") or 0.0)
         df["ob_orders_count"] = df["ob_bid_levels"] + df["ob_ask_levels"]
     else:
-        for c in ["ob_imbalance", "ob_depth_ratio", "ob_total_liq", "ob_depth", "ob_bid_levels", "ob_ask_levels", "ob_orders_count"]:
+        for c in [
+            "ob_imbalance",
+            "ob_depth_ratio",
+            "ob_total_liq",
+            "ob_depth",
+            "ob_bid_levels",
+            "ob_ask_levels",
+            "ob_orders_count",
+        ]:
             df[c] = 0.0
 
     # On-chain aggregated features (from signals list)
-    oc_map = {str(s.get("metric")): float(s.get("value", 0.0) or 0.0) for s in (payload.onchain_signals or [])}
+    oc_map = {
+        str(s.get("metric")): float(s.get("value", 0.0) or 0.0)
+        for s in (payload.onchain_signals or [])
+    }
     df["onchain_netflow_24h"] = oc_map.get("exchanges_netflow_sum", 0.0)
     df["onchain_active_addr"] = oc_map.get("active_addresses", 0.0)
     df["onchain_mvrv_z"] = oc_map.get("mvrv_z_score", 0.0)
@@ -315,12 +363,18 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         try:
             now = datetime.now(timezone.utc)
             win = timedelta(minutes=max(10, int(payload.social_window_minutes)))
+
             def _parse_ts(s):
                 try:
                     return pd.Timestamp(s).to_pydatetime().astimezone(timezone.utc)
                 except Exception:
                     return now
-            recent = [s for s in payload.social_signals if (now - _parse_ts(s.get("ts"))).total_seconds() <= win.total_seconds()]
+
+            recent = [
+                s
+                for s in payload.social_signals
+                if (now - _parse_ts(s.get("ts"))).total_seconds() <= win.total_seconds()
+            ]
             tw = [s for s in recent if (s.get("platform") == "twitter")]
             rd = [s for s in recent if (s.get("platform") == "reddit")]
             minutes = max(1.0, win.total_seconds() / 60.0)
@@ -328,18 +382,29 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
             df["reddit_per_min"] = len(rd) / minutes
             # Burstiness proxy: 30m rate vs window rate
             win2 = timedelta(minutes=min(30, int(payload.social_window_minutes)))
-            recent2 = [s for s in payload.social_signals if (now - _parse_ts(s.get("ts"))).total_seconds() <= win2.total_seconds()]
+            recent2 = [
+                s
+                for s in payload.social_signals
+                if (now - _parse_ts(s.get("ts"))).total_seconds()
+                <= win2.total_seconds()
+            ]
             tw2 = [s for s in recent2 if (s.get("platform") == "twitter")]
             rd2 = [s for s in recent2 if (s.get("platform") == "reddit")]
             m2 = max(1.0, win2.total_seconds() / 60.0)
             tw_rate2 = len(tw2) / m2
             rd_rate2 = len(rd2) / m2
-            df["tweets_burst"] = (tw_rate2 / max(1e-6, df["tweets_per_min"]) - 1.0).replace([np.inf, -np.inf], 0.0)
-            df["reddit_burst"] = (rd_rate2 / max(1e-6, df["reddit_per_min"]) - 1.0).replace([np.inf, -np.inf], 0.0)
+            df["tweets_burst"] = (
+                tw_rate2 / max(1e-6, df["tweets_per_min"]) - 1.0
+            ).replace([np.inf, -np.inf], 0.0)
+            df["reddit_burst"] = (
+                rd_rate2 / max(1e-6, df["reddit_per_min"]) - 1.0
+            ).replace([np.inf, -np.inf], 0.0)
             # Average sentiment score if available
             try:
                 s_vals = [float(s.get("score", 0.0) or 0.0) for s in recent]
-                df["social_sent_mean"] = (sum(s_vals) / max(1, len(s_vals))) if s_vals else 0.0
+                df["social_sent_mean"] = (
+                    (sum(s_vals) / max(1, len(s_vals))) if s_vals else 0.0
+                )
             except Exception:
                 df["social_sent_mean"] = 0.0
         except Exception:
@@ -365,10 +430,19 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     if not payload.regime_hint:
         try:
             close = df["close"].astype(float)
-            ema20 = df.get("ema_20", close.ewm(span=20, adjust=False).mean()).astype(float)
-            ema50 = df.get("ema_50", close.ewm(span=50, adjust=False).mean()).astype(float)
+            ema20 = df.get("ema_20", close.ewm(span=20, adjust=False).mean()).astype(
+                float
+            )
+            ema50 = df.get("ema_50", close.ewm(span=50, adjust=False).mean()).astype(
+                float
+            )
             atr = df.get("atr_14").astype(float)
-            trend = float(((ema20 - ema50) / (close.abs() + 1e-9)).ewm(span=20, adjust=False).mean().iloc[-1])
+            trend = float(
+                ((ema20 - ema50) / (close.abs() + 1e-9))
+                .ewm(span=20, adjust=False)
+                .mean()
+                .iloc[-1]
+            )
             vol = float((atr.iloc[-1] / max(1e-9, close.iloc[-1])) * 100.0)
             label = "range"
             if vol > 3.5:
@@ -388,12 +462,26 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     # Integral news context score (0..1) using existing columns
     try:
         import math as _m
+
         a = float(os.getenv("NEWS_CTX_COEFF_A", "0.1"))
         b = float(os.getenv("NEWS_CTX_COEFF_B", "0.6"))
         c = float(os.getenv("NEWS_CTX_COEFF_C", "0.5"))
         burst = 0.0
         try:
-            burst = float(max(float(df.get("tweets_burst", 0.0).iloc[-1] if "tweets_burst" in df.columns else 0.0), float(df.get("reddit_burst", 0.0).iloc[-1] if "reddit_burst" in df.columns else 0.0)))
+            burst = float(
+                max(
+                    float(
+                        df.get("tweets_burst", 0.0).iloc[-1]
+                        if "tweets_burst" in df.columns
+                        else 0.0
+                    ),
+                    float(
+                        df.get("reddit_burst", 0.0).iloc[-1]
+                        if "reddit_burst" in df.columns
+                        else 0.0
+                    ),
+                )
+            )
         except Exception:
             burst = 0.0
         # Use scalars for stability (replicated across rows)
@@ -489,7 +577,7 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         *(["cp_simple_flag"] if "cp_simple_flag" in df.columns else []),
         *(["cpd_score"] if "cpd_score" in df.columns else []),
         # dynamically added facts features
-        *(fact_cols if 'fact_cols' in locals() else []),
+        *(fact_cols if "fact_cols" in locals() else []),
     ]
     feat = df[feature_cols].copy()
     # Stabilize NaNs/Infs for downstream consumers
@@ -497,7 +585,9 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         num_cols = [c for c in feat.columns if c != "ts"]
         feat[num_cols] = feat[num_cols].replace([np.inf, -np.inf], np.nan)
         # Forward then backward fill to avoid gaps at window starts, fallback to 0.0
-        feat[num_cols] = feat[num_cols].fillna(method="ffill").fillna(method="bfill").fillna(0.0)
+        feat[num_cols] = (
+            feat[num_cols].fillna(method="ffill").fillna(method="bfill").fillna(0.0)
+        )
     except Exception:
         pass
 
@@ -524,7 +614,10 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python -m pipeline.features.features_calc '<json_payload>'", file=sys.stderr)
+        print(
+            "Usage: python -m pipeline.features.features_calc '<json_payload>'",
+            file=sys.stderr,
+        )
         sys.exit(2)
     payload_raw = sys.argv[1]
     payload = FeaturesCalcInput.model_validate_json(payload_raw)

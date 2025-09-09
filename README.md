@@ -21,7 +21,7 @@ docker compose run --rm pipeline \
   python -m pipeline.data.ingest_prices '{"run_id":"2025-09-06-12","slot":"12:00","symbols":["BTCUSDT"],"start_ts":1693939200,"end_ts":1693950000}'
 ```
 
-Данные сохранятся в MinIO (bucket `artifacts`) по пути `/runs/{YYYY-MM-DD}/{slot}/prices.parquet`.
+Данные сохранятся в MinIO (bucket `artifacts`) по схеме `/runs/{YYYY-MM-DD}/{slot}/<artifact>.parquet` (например, `prices.parquet`).
 
 4) Новости (CryptoPanic + NewsAPI, TextBlob/NLTK):
 
