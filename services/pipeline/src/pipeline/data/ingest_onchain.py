@@ -85,9 +85,10 @@ def run(payload: IngestOnchainInput) -> IngestOnchainOutput:
             )
 
     df = pd.DataFrame([s.model_dump() for s in signals])
+    table = pa.Table.from_pandas(df)
+    pq.write_table(table, "onchain.parquet", compression="zstd")
     date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     s3_path = f"runs/{date_key}/{payload.slot}/onchain.parquet"
-    table = pa.Table.from_pandas(df)
     sink = pa.BufferOutputStream()
     pq.write_table(table, sink, compression="zstd")
     buf = sink.getvalue().to_pybytes()

@@ -1,6 +1,11 @@
 """Data ingestion modules."""
 
 from .ingest_news import IngestNewsInput, IngestNewsOutput
+ codex/create-ingest_onchain.py-for-metrics
+from .ingest_news import run as run_news
+from .ingest_onchain import IngestOnchainInput, IngestOnchainOutput
+from .ingest_onchain import run as run_onchain
+
 from .ingest_news import run as ingest_news
 from .ingest_onchain import IngestOnchainInput, IngestOnchainOutput
 from .ingest_onchain import run as ingest_onchain
@@ -11,10 +16,17 @@ from .ingest_prices import run as ingest_prices
 from .ingest_prices_lowtf import (IngestPricesLowTFInput,
                                   IngestPricesLowTFOutput)
 from .ingest_prices_lowtf import run as ingest_prices_lowtf
+main
 
 __all__ = [
     "IngestNewsInput",
     "IngestNewsOutput",
+ codex/create-ingest_onchain.py-for-metrics
+    "run_news",
+    "IngestOnchainInput",
+    "IngestOnchainOutput",
+    "run_onchain",
+
     "ingest_news",
     "IngestOnchainInput",
     "IngestOnchainOutput",
@@ -28,4 +40,5 @@ __all__ = [
     "IngestPricesLowTFInput",
     "IngestPricesLowTFOutput",
     "ingest_prices_lowtf",
+ main
 ]
