@@ -128,27 +128,4 @@ docker compose up -d pushgateway prometheus grafana
 - `.github/workflows/ci.yaml` — линтеры/проверки.
 - `.pre-commit-config.yaml` — ruff/black/isort/mypy.
 
-## Следующие шаги
 
-- Добавить ingest_news (Flowise/Langflow + OpenAI) и `features_calc`.
-- Реализовать модели 4h/12h, ансамбль и `publish_telegram`.
-- Включить бумажную торговлю и Verifier.
-- Подключить тяжёлые модели Darts/NeuralProphet (N‑BEATS, Prophet‑like) по флагам `USE_DARTS_NBEATS=1` и т.д.
-  - Для этого соберите образ с `--build-arg INSTALL_OPTIONALS=1` и включите в `.env`:
-Опциональные модели/библиотеки (Darts/NeuralProphet/Prophet/Kats):
-
-- По умолчанию не устанавливаются (образ легче). Чтобы включить, соберите образ с аргументом:
-
-```
-docker compose build --build-arg INSTALL_OPTIONALS=1 pipeline
-```
-
-- Затем активируйте нужные флаги в `.env` и перезапустите `pipeline`.
-
-    - `USE_DARTS=1` (Theta), `USE_DARTS_NBEATS=1` (N‑BEATS)
-    - `USE_NEURALPROPHET=1`, `NP_EPOCHS=5`
-    - `USE_PROPHET=1` или `USE_DARTS_PROPHET=1`
-  - Опционально включите авто‑тюнинг ARIMA: `AUTO_TUNE_ARIMA=1` (+ `ARIMA_TUNING_TRIALS`).
- - Flowise: собрать графы `explain/debate/scenario` (JSON‑схема в README), задать URL `FLOWISE_*`, включить health и ретраи.
- - Настроить Windmill расписания 00:00/12:00 и prewarm/healthcheck.
-# CryptoIA
