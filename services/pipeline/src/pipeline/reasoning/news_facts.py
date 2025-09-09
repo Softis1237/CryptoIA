@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 from loguru import logger
 
-from .llm import call_openai_json
+from .llm import call_flowise_json, call_openai_json
 
 
 def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = None) -> List[Dict[str, Any]]:
@@ -45,7 +45,9 @@ def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = Non
             "Skip vague or non-crypto events. If multiple events in one headline, split into separate items.\n"
             f"Input: {compact}"
         )
-        data = call_openai_json(system_prompt=system, user_prompt=user, model=os.getenv("OPENAI_MODEL_NEWS_FACTS"))
+        data = call_flowise_json("FLOWISE_NEWS_URL", {"system": system, "user": user}) or call_openai_json(
+            system_prompt=system, user_prompt=user, model=os.getenv("OPENAI_MODEL_NEWS_FACTS")
+        )
         if not isinstance(data, dict):
             return []
         facts = data.get("facts") or data.get("events") or []

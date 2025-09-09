@@ -3,17 +3,18 @@ from __future__ import annotations
 import io
 import os
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests  # type: ignore[import-untyped]
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from textblob import TextBlob
 
 from ..infra.s3 import upload_bytes
+from ..reasoning.news_facts import extract_news_facts_batch
 
 
 class NewsSignal(BaseModel):
@@ -29,18 +30,14 @@ class IngestNewsInput(BaseModel):
     run_id: str
     slot: str
     time_window_hours: int = 12
-codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
-    news_signals: List[dict] = Field(default_factory=list)
-    news_facts: Optional[List[dict]] = None
-
     query: str = "crypto OR bitcoin"
- main
 
 
 class IngestNewsOutput(BaseModel):
     run_id: str
     slot: str
     news_signals: List[NewsSignal]
+    news_facts: Optional[List[dict]] = None
     news_path_s3: str
 
 
@@ -58,32 +55,22 @@ def _sentiment(text: str) -> tuple[str, float]:
 
 def _fetch_from_cryptopanic(since_ts: int, api_key: str) -> List[dict]:
     url = "https://cryptopanic.com/api/v1/posts/"
-    params = {
-        "auth_token": api_key,
-        "public": "true",
-        "kind": "news",
-        "filter": "rising",
-        "since": since_ts,
-    }
+    params = {"auth_token": api_key, "public": "true", "kind": "news", "filter": "rising", "since": since_ts}
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
     data = r.json().get("results", [])
     items = []
     for item in data:
-        items.append(
-            {
-                "ts": item.get("published_at"),
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "source": item.get("source", {}).get("domain", ""),
-            }
-        )
+        items.append({
+            "ts": item.get("published_at"),
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "source": item.get("source", {}).get("domain", ""),
+        })
     return items
 
 
-def _fetch_from_newsapi(
-    start: datetime, end: datetime, api_key: str, query: str
-) -> List[dict]:
+def _fetch_from_newsapi(start: datetime, end: datetime, api_key: str, query: str) -> List[dict]:
     url = "https://newsapi.org/v2/everything"
     params = {
         "apiKey": api_key,
@@ -99,22 +86,21 @@ def _fetch_from_newsapi(
     data = r.json().get("articles", [])
     items = []
     for item in data:
-        items.append(
-            {
-                "ts": item.get("publishedAt"),
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "source": item.get("source", {}).get("name", ""),
-            }
-        )
+        items.append({
+            "ts": item.get("publishedAt"),
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "source": item.get("source", {}).get("name", ""),
+        })
     return items
 
 
 def run(inp: IngestNewsInput) -> IngestNewsOutput:
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=inp.time_window_hours)
-    cryptopanic_key = os.getenv("CRYPTOPANIC_API_KEY") or os.getenv("CRYPTOPANIC_KEY")
-    newsapi_key = os.getenv("NEWSAPI_API_KEY") or os.getenv("NEWSAPI_KEY")
+    cryptopanic_key = os.getenv("CRYPTOPANIC_TOKEN") or os.getenv("CRYPTOPANIC_API_KEY")
+    newsapi_key = os.getenv("NEWSAPI_KEY") or os.getenv("NEWSAPI_API_KEY")
+
     rows: List[dict] = []
     try:
         if cryptopanic_key:
@@ -123,16 +109,16 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             rows = _fetch_from_newsapi(start, now, newsapi_key, inp.query)
         else:
             logger.warning("No news API key provided")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"fetch news failed: {e}")
         rows = []
 
     signals: List[NewsSignal] = []
     for r in rows:
         sent, impact = _sentiment(r.get("title", ""))
-        ts = r.get("ts")
+        ts_raw = r.get("ts")
         try:
-            ts_int = int(pd.to_datetime(ts, utc=True).timestamp())
+            ts_int = int(pd.to_datetime(ts_raw, utc=True).timestamp())
         except Exception:
             ts_int = int(now.timestamp())
         signals.append(
@@ -146,20 +132,19 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             )
         )
 
+    news_facts = extract_news_facts_batch([s.model_dump() for s in signals]) or None
+
     df = pd.DataFrame([s.model_dump() for s in signals])
     table = pa.Table.from_pandas(df)
     buf = io.BytesIO()
     pq.write_table(table, buf)
- codex/use-runs/yyyy-mm-dd/slot/artifact.parquet-schema
     date_key = now.strftime("%Y-%m-%d")
-
-    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
- main
     key = f"runs/{date_key}/{inp.slot}/news.parquet"
     news_path_s3 = upload_bytes(key, buf.getvalue(), "application/x-parquet")
     return IngestNewsOutput(
         run_id=inp.run_id,
         slot=inp.slot,
         news_signals=signals,
+        news_facts=news_facts,
         news_path_s3=news_path_s3,
     )

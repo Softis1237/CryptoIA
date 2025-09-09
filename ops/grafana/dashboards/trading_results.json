@@ -1,0 +1,25 @@
+{
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "type": "graph",
+      "title": "PnL 24h",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "pipeline_value{name=\"pnl_24h\"}", "legendFormat": "pnl_24h", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "graph",
+      "title": "Win Rate",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "pipeline_value{name=\"win_rate\"}", "legendFormat": "win_rate", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "schemaVersion": 37,
+  "style": "dark",
+  "time": {"from": "now-30d", "to": "now"},
+  "timezone": "",
+  "title": "Trading Results",
+  "version": 1
+}

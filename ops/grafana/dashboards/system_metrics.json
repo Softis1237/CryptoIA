@@ -1,0 +1,25 @@
+{
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "type": "graph",
+      "title": "CPU Usage",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "process_cpu_seconds_total", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "graph",
+      "title": "Memory Usage",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "process_resident_memory_bytes", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "schemaVersion": 37,
+  "style": "dark",
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "",
+  "title": "System Metrics",
+  "version": 1
+}

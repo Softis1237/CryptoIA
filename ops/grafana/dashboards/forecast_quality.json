@@ -1,0 +1,31 @@
+{
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "type": "graph",
+      "title": "sMAPE",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"smape_4h\"}", "legendFormat": "smape_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"smape_12h\"}", "legendFormat": "smape_12h", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "graph",
+      "title": "Directional Accuracy",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"da_4h\"}", "legendFormat": "da_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"da_12h\"}", "legendFormat": "da_12h", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "schemaVersion": 37,
+  "style": "dark",
+  "time": {"from": "now-7d", "to": "now"},
+  "timezone": "",
+  "title": "Forecast Quality",
+  "version": 1
+}

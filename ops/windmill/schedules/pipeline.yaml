@@ -1,0 +1,14 @@
+# Windmill schedule definitions for CryptoIA
+schedules:
+  - name: release_twice_daily
+    flow: flows/predict_release.py
+    cron: "0 0,12 * * *"
+  - name: prewarm_features
+    flow: flows/prewarm_features.py
+    cron: "50 0,12 * * *"
+  - name: healthcheck
+    flow: flows/healthcheck_nightly.py
+    cron: "0 1 * * *"
+  - name: cleanup_old_runs
+    flow: flows/cleanup_old_runs.py
+    cron: "0 2 * * *"
