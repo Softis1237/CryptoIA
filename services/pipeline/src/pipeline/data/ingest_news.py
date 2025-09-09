@@ -31,6 +31,11 @@ class IngestNewsInput(BaseModel):
     slot: str
     time_window_hours: int = 12
     query: str = "crypto OR bitcoin"
+codex/create-task-list-for-project-completion-qym2g0
+
+    news_signals: List[dict] = Field(default_factory=list)
+    news_facts: Optional[List[dict]] = None
+ main
 
 
 class IngestNewsOutput(BaseModel):
@@ -121,16 +126,14 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             ts_int = int(pd.to_datetime(ts_raw, utc=True).timestamp())
         except Exception:
             ts_int = int(now.timestamp())
-        signals.append(
-            NewsSignal(
-                ts=ts_int,
-                title=r.get("title", ""),
-                url=r.get("url", ""),
-                source=r.get("source", ""),
-                sentiment=sent,
-                impact_score=impact,
-            )
-        )
+        signals.append(NewsSignal(
+            ts=ts_int,
+            title=r.get("title", ""),
+            url=r.get("url", ""),
+            source=r.get("source", ""),
+            sentiment=sent,
+            impact_score=impact,
+        ))
 
     news_facts = extract_news_facts_batch([s.model_dump() for s in signals]) or None
 
