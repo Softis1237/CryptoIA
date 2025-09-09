@@ -20,12 +20,27 @@ class EnsembleOutput(BaseModel):
     rationale_points: List[str]
 
 
+def _calculate_weight(pred: dict, trust_weights: dict | None) -> float:
+    """Calculates the weight for a single model's prediction based on sMAPE and trust."""
+    smape = float((pred.get("cv_metrics") or {}).get("smape", 20.0))
+    base_weight = 1.0 / max(1e-3, smape)
+
+    trust_multiplier = 1.0
+    if trust_weights and pred.get("model") in trust_weights:
+        try:
+            trust_multiplier = float(trust_weights[pred.get("model")])
+        except (ValueError, TypeError):
+            trust_multiplier = 1.0
+
+    return base_weight * max(0.0, trust_multiplier)
+
+
 def run(payload: EnsembleInput) -> EnsembleOutput:
     # Try stacking if enabled and horizon provided
     use_stacking = os.getenv("ENABLE_STACKING", "0") in {"1", "true", "True"}
     if use_stacking and payload.horizon:
         try:
-            from .stacking import suggest_weights, combine_with_weights
+            from .stacking import combine_with_weights, suggest_weights
 
             w_suggest, n = suggest_weights(payload.horizon)
             if w_suggest and n >= 30:
@@ -35,30 +50,27 @@ def run(payload: EnsembleInput) -> EnsembleOutput:
                     "Веса (meta): " + ", ".join(f"{m}={w:.2f}" for m, w in w_suggest.items()),
                     f"Samples: {n}",
                 ]
-                return EnsembleOutput(y_hat=float(y_hat), interval=(float(low), float(high)), proba_up=float(proba_up), weights=w_suggest, rationale_points=rationale)
+                return EnsembleOutput(
+                    y_hat=float(y_hat),
+                    interval=(float(low), float(high)),
+                    proba_up=float(proba_up),
+                    weights=w_suggest,
+                    rationale_points=rationale,
+                )
         except Exception:
             # fallback to default below
             pass
-    # weight by inverse sMAPE (lower error -> higher weight), adjusted by optional trust
-    weights = {}
-    total = 0.0
-    for p in payload.preds:
-        smape = float((p.get("cv_metrics") or {}).get("smape", 20.0))
-        base = 1.0 / max(1e-3, smape)
-        tw = 1.0
-        if payload.trust_weights and p.get("model") in payload.trust_weights:
-            try:
-                tw = float(payload.trust_weights[p.get("model")])
-            except Exception:
-                tw = 1.0
-        w = base * max(0.0, tw)
-        weights[p["model"]] = w
-        total += w
-    if total == 0:
-        weights = {p["model"]: 1.0 for p in payload.preds}
-        total = float(len(payload.preds))
 
-    norm_w = {m: w / total for m, w in weights.items()}
+    # Default: weight by inverse sMAPE (lower error -> higher weight), adjusted by optional trust
+    weights = {p["model"]: _calculate_weight(p, payload.trust_weights) for p in payload.preds}
+    total_weight = sum(weights.values())
+
+    if total_weight == 0:
+        # Fallback to uniform weights if all weights are zero
+        weights = {p["model"]: 1.0 for p in payload.preds}
+        total_weight = float(len(payload.preds))
+
+    norm_w = {m: w / total_weight for m, w in weights.items()}
 
     def wavg(key: str) -> float:
         return sum((float(p[key]) * norm_w[p["model"]]) for p in payload.preds)
