@@ -35,7 +35,11 @@ class IngestFuturesOutput(BaseModel):
 
 
 def run(payload: IngestFuturesInput) -> IngestFuturesOutput:
-    provider = os.getenv("CCXT_FUTURES_PROVIDER") or os.getenv("CCXT_PROVIDER", "binanceusdm")
+    provider: str = (
+        os.getenv("CCXT_FUTURES_PROVIDER")
+        or os.getenv("CCXT_PROVIDER", "binanceusdm")
+        or "binanceusdm"
+    )
     ex = getattr(ccxt, provider)({"enableRateLimit": True})
     now = datetime.now(timezone.utc)
     ts = int(now.timestamp())
@@ -46,13 +50,25 @@ def run(payload: IngestFuturesInput) -> IngestFuturesOutput:
 
     try:
         fr = ex.fetch_funding_rate(payload.symbol)
-        funding_rate = float(fr.get("fundingRate")) if fr and fr.get("fundingRate") is not None else None
-        mark_price = float(fr.get("markPrice")) if fr and fr.get("markPrice") is not None else None
+        funding_rate = (
+            float(fr.get("fundingRate"))
+            if fr and fr.get("fundingRate") is not None
+            else None
+        )
+        mark_price = (
+            float(fr.get("markPrice"))
+            if fr and fr.get("markPrice") is not None
+            else None
+        )
     except Exception:
         pass
     try:
         oi = ex.fetch_open_interest(payload.symbol)
-        open_interest = float(oi.get("openInterest")) if oi and oi.get("openInterest") is not None else None
+        open_interest = (
+            float(oi.get("openInterest"))
+            if oi and oi.get("openInterest") is not None
+            else None
+        )
     except Exception:
         pass
 
@@ -69,7 +85,9 @@ def run(payload: IngestFuturesInput) -> IngestFuturesOutput:
     s3_path = f"runs/{date_key}/{payload.slot}/futures.parquet"
     sink = pa.BufferOutputStream()
     pq.write_table(table, sink, compression="zstd")
-    s3_uri = upload_bytes(s3_path, sink.getvalue().to_pybytes(), content_type="application/octet-stream")
+    s3_uri = upload_bytes(
+        s3_path, sink.getvalue().to_pybytes(), content_type="application/octet-stream"
+    )
 
     return IngestFuturesOutput(
         run_id=payload.run_id,
