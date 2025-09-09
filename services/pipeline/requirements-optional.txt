@@ -1,0 +1,26 @@
+# Optional heavy/time-series/feature libs. Install with build-arg INSTALL_OPTIONALS=1
+# Deep models (CPU ok but heavy):
+# Pin numpy to <2.0 to satisfy darts/neuralprophet (pandas 2.2.2 works with >=1.26)
+numpy>=1.26,<2.0
+darts==0.30.0
+torch==2.4.1
+
+# Prophet-like models (choose one; both supported):
+prophet==1.1.5
+
+# NeuralProphet
+neuralprophet==0.9.0
+
+# Kats (stats features/anomalies/seasonality)
+# Kats 0.2.0 requires numpy<1.22 which conflicts with pandas>=2 (needs numpy>=1.26).
+# It's optional in code (guarded by USE_KATS), so keep it disabled by default.
+#kats==0.2.0
+
+# Optional NLP
+transformers==4.44.2
+sentence-transformers==3.0.1
+pytrends==4.9.2
+scikit-learn==1.5.1
+lightgbm==4.5.0
+xgboost==2.1.1
+catboost==1.2.5

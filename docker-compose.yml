@@ -1,0 +1,174 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-crypto}
+    # expose only in network (no host binding to avoid conflicts)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:Z
+
+  redis:
+    image: redis:7
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: |
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin};
+      mc mb -p local/${S3_BUCKET:-artifacts} || true;
+      mc anonymous set download local/${S3_BUCKET:-artifacts} || true;
+      exit 0
+      "
+
+  pipeline:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_HOST=redis
+      - S3_ENDPOINT_URL=http://minio:9000
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - createbuckets
+    volumes:
+      - ./services/pipeline/src:/app/src:Z
+
+  coordinator:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_HOST=redis
+      - S3_ENDPOINT_URL=http://minio:9000
+      - SLOT=scheduled
+      - RUN_INTERVAL_SEC=3600
+      - USE_COORDINATOR=1
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - createbuckets
+    command: -m pipeline.orchestration.scheduled_runner
+    restart: unless-stopped
+    volumes:
+      - ./services/pipeline/src:/app/src:Z
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:Z
+    ports:
+      - "9090:9090"
+    depends_on:
+      - pushgateway
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./ops/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:Z
+      - ./ops/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:Z
+      - ./ops/grafana/dashboards:/etc/grafana/dashboards:Z
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  flowise:
+    image: flowiseai/flowise:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - FLOWISE_USERNAME=admin
+      - FLOWISE_PASSWORD=admin
+    volumes:
+      - ./flowise_data:/root/.flowise:Z
+    restart: unless-stopped
+
+  windmill:
+    image: ghcr.io/windmill-labs/windmill:main
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://app:app@postgres:5432/crypto
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  paper_risk:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.trading.paper_trading risk --interval=60
+    restart: unless-stopped
+
+  paper_settler:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.trading.paper_trading settler --interval=60
+    restart: unless-stopped
+
+  paper_exec:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.trading.paper_trading executor
+
+  bot:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres
+    depends_on:
+      - postgres
+    command: -m pipeline.trading.payments_bot
+
+volumes:
+  db_data:
+  minio_data:

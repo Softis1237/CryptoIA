@@ -1,0 +1,148 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Pipeline Step Duration (seconds)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "pipeline_step_seconds{job=\"release_flow\"}",
+          "legendFormat": "{{step}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "graph",
+      "title": "Business Metrics (latest)",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"p_up_4h\"}", "legendFormat": "p_up_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"interval_width_pct_4h\"}", "legendFormat": "interval_width_pct_4h", "refId": "B"},
+        {"expr": "pipeline_value{name=\"atr_pct\"}", "legendFormat": "atr_pct", "refId": "C"},
+        {"expr": "pipeline_value{name=\"no_trade\"}", "legendFormat": "no_trade", "refId": "D"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 9}
+    },
+    {
+      "type": "graph",
+      "title": "Risk Metrics",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"risk_VaR95\"}", "legendFormat": "VaR95", "refId": "A"},
+        {"expr": "pipeline_value{name=\"risk_ES95\"}", "legendFormat": "ES95", "refId": "B"},
+        {"expr": "pipeline_value{name=\"risk_max_drawdown\"}", "legendFormat": "maxDD", "refId": "C"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 18}
+    },
+    {
+      "type": "graph",
+      "title": "Validation",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"validation_warns\"}", "legendFormat": "warns", "refId": "A"},
+        {"expr": "pipeline_value{name=\"validation_errs\"}", "legendFormat": "errs", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 27}
+    },
+    {
+      "type": "graph",
+      "title": "Feedback",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"feedback_avg\"}", "legendFormat": "avg", "refId": "A"},
+        {"expr": "pipeline_value{name=\"feedback_count\"}", "legendFormat": "count", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 36}
+    }
+    ,
+    {
+      "type": "graph",
+      "title": "CV sMAPE",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"cv_smape_4h\"}", "legendFormat": "cv_smape_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"cv_smape_12h\"}", "legendFormat": "cv_smape_12h", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 45}
+    },
+    {
+      "type": "graph",
+      "title": "CV Directional Accuracy",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"cv_da_4h\"}", "legendFormat": "cv_da_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"cv_da_12h\"}", "legendFormat": "cv_da_12h", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 54}
+    }
+    ,
+    {
+      "type": "graph",
+      "title": "A/B Divergence",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"ab_div_4h_abs\"}", "legendFormat": "ab_div_4h_abs", "refId": "A"},
+        {"expr": "pipeline_value{name=\"ab_div_12h_abs\"}", "legendFormat": "ab_div_12h_abs", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 63}
+    },
+    {
+      "type": "graph",
+      "title": "News Context",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"news_ctx\"}", "legendFormat": "news_ctx", "refId": "A"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 72}
+    },
+    {
+      "type": "graph",
+      "title": "Outcomes sMAPE / MAE / DA",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"smape_4h\"}", "legendFormat": "smape_4h", "refId": "A"},
+        {"expr": "pipeline_value{name=\"smape_12h\"}", "legendFormat": "smape_12h", "refId": "B"},
+        {"expr": "pipeline_value{name=\"mae_4h\"}", "legendFormat": "mae_4h", "refId": "C"},
+        {"expr": "pipeline_value{name=\"mae_12h\"}", "legendFormat": "mae_12h", "refId": "D"},
+        {"expr": "pipeline_value{name=\"da_4h\"}", "legendFormat": "da_4h", "refId": "E"},
+        {"expr": "pipeline_value{name=\"da_12h\"}", "legendFormat": "da_12h", "refId": "F"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 81}
+    },
+    {
+      "type": "graph",
+      "title": "Errors by Regime",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=~\"err_by_regime4h_.*\"}", "legendFormat": "{{name}}", "refId": "A"},
+        {"expr": "pipeline_value{name=~\"err_by_regime12h_.*\"}", "legendFormat": "{{name}}", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 90}
+    },
+    {
+      "type": "graph",
+      "title": "Regime Alphas (per model)",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=~\"alpha_.*\"}", "legendFormat": "{{name}}", "refId": "A"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 99}
+    }
+  ],
+  "schemaVersion": 37,
+  "style": "dark",
+  "tags": ["pipeline"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Pipeline Overview",
+  "version": 1
+}
