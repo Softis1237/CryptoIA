@@ -1,5 +1,10 @@
 """Data ingestion modules."""
 
+ codex/create-ingest_prices.py-and-models
+from .ingest_news import IngestNewsInput, IngestNewsOutput, run
+
+__all__ = ["IngestNewsInput", "IngestNewsOutput", "run"]
+
 codex/create-ingest_news.py-and-data-models
 from .ingest_news import IngestNewsInput, IngestNewsOutput, run
 
@@ -46,3 +51,4 @@ __all__ = [
     "ingest_prices_lowtf",
  main
 ]
+ main
