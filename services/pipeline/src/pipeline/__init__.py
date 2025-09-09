@@ -1,3 +1,6 @@
+ codex/get-provider-in-modules
+"""Pipeline package."""
+
  codex/create-ingest_prices.py-and-models
 """Pipeline package."""
 
@@ -12,6 +15,7 @@ codex/create-ingest_onchain.py-for-metrics
 
 __all__: list[str] = []
 
+ main
  main
  main
  main

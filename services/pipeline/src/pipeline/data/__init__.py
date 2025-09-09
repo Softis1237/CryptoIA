@@ -1,3 +1,11 @@
+ codex/get-provider-in-modules
+"""Data ingestion package."""
+
+from .ingest_news import IngestNewsInput, IngestNewsOutput
+from .ingest_news import run as ingest_news_run
+
+__all__ = ["IngestNewsInput", "IngestNewsOutput", "ingest_news_run"]
+
 """Data ingestion modules."""
 
  codex/create-ingest_prices.py-and-models
@@ -51,4 +59,5 @@ __all__ = [
     "ingest_prices_lowtf",
  main
 ]
+ main
  main

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
-from typing import Iterable, Optional, List, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, List, Optional, Tuple
 
 import psycopg2
 from loguru import logger
+from psycopg2.extras import Json
 
 from .config import settings
-from psycopg2.extras import Json
 
 
 def _dsn() -> str:
@@ -70,22 +69,33 @@ def insert_news_facts(rows: Iterable[dict]) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             for r in rows:
-                cur.execute(sql, {
-                    "src_id": r.get("src_id"),
-                    "ts": r.get("ts"),
-                    "type": r.get("type"),
-                    "direction": r.get("direction"),
-                    "magnitude": r.get("magnitude"),
-                    "confidence": r.get("confidence"),
-                    "entities": Json(r.get("entities") or {}),
-                    "raw": Json(r.get("raw") or {}),
-                })
+                cur.execute(
+                    sql,
+                    {
+                        "src_id": r.get("src_id"),
+                        "ts": r.get("ts"),
+                        "type": r.get("type"),
+                        "direction": r.get("direction"),
+                        "magnitude": r.get("magnitude"),
+                        "confidence": r.get("confidence"),
+                        "entities": Json(r.get("entities") or {}),
+                        "raw": Json(r.get("raw") or {}),
+                    },
+                )
                 count += cur.rowcount
     logger.info(f"Inserted news facts: {count}")
     return count
 
 
-def upsert_prediction(run_id: str, horizon: str, y_hat: float, pi_low: float, pi_high: float, proba_up: float, per_model_json: dict) -> None:
+def upsert_prediction(
+    run_id: str,
+    horizon: str,
+    y_hat: float,
+    pi_low: float,
+    pi_high: float,
+    proba_up: float,
+    per_model_json: dict,
+) -> None:
     sql = (
         "INSERT INTO predictions (run_id, horizon, y_hat, pi_low, pi_high, proba_up, per_model_json) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s) "
@@ -93,7 +103,18 @@ def upsert_prediction(run_id: str, horizon: str, y_hat: float, pi_low: float, pi
     )
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (run_id, horizon, y_hat, pi_low, pi_high, proba_up, Json(per_model_json)))
+            cur.execute(
+                sql,
+                (
+                    run_id,
+                    horizon,
+                    y_hat,
+                    pi_low,
+                    pi_high,
+                    proba_up,
+                    Json(per_model_json),
+                ),
+            )
     logger.info(f"Saved prediction {run_id} {horizon}")
 
 
@@ -160,7 +181,9 @@ def upsert_ensemble_weights(run_id: str, weights: dict) -> None:
     logger.info(f"Saved ensemble weights for {run_id}")
 
 
-def upsert_model_trust_regime(regime_label: str, horizon: str, model: str, weight: float) -> None:
+def upsert_model_trust_regime(
+    regime_label: str, horizon: str, model: str, weight: float
+) -> None:
     """Upsert per-regime model trust weight."""
     sql = (
         "INSERT INTO model_trust_regime (regime_label, horizon, model, weight) VALUES (%s, %s, %s, %s) "
@@ -176,9 +199,7 @@ def fetch_model_trust_regime(regime_label: str, horizon: str) -> dict:
 
     Returns empty dict if none found.
     """
-    sql = (
-        "SELECT model, weight FROM model_trust_regime WHERE regime_label=%s AND horizon=%s"
-    )
+    sql = "SELECT model, weight FROM model_trust_regime WHERE regime_label=%s AND horizon=%s"
     out: dict[str, float] = {}
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -231,7 +252,9 @@ def upsert_trade_suggestion(run_id: str, card: dict) -> None:
     logger.info(f"Saved trade suggestion for {run_id}")
 
 
-def upsert_regime(run_id: str, label: str, confidence: float, regime_features: dict) -> None:
+def upsert_regime(
+    run_id: str, label: str, confidence: float, regime_features: dict
+) -> None:
     sql = (
         "INSERT INTO regimes (run_id, label, confidence) VALUES (%s, %s, %s) "
         "ON CONFLICT (run_id) DO UPDATE SET label=excluded.label, confidence=excluded.confidence"
@@ -242,13 +265,20 @@ def upsert_regime(run_id: str, label: str, confidence: float, regime_features: d
     logger.info(f"Saved regime for {run_id}: {label} ({confidence})")
 
 
-def log_error(run_id: str, horizon: str | None, metrics_json: dict | None, regime: str | None, features_digest: str | None) -> None:
-    sql = (
-        "INSERT INTO errors_log (run_id, horizon, metrics_json, regime, features_digest) VALUES (%s, %s, %s, %s, %s)"
-    )
+def log_error(
+    run_id: str,
+    horizon: str | None,
+    metrics_json: dict | None,
+    regime: str | None,
+    features_digest: str | None,
+) -> None:
+    sql = "INSERT INTO errors_log (run_id, horizon, metrics_json, regime, features_digest) VALUES (%s, %s, %s, %s, %s)"
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (run_id, horizon, Json(metrics_json or {}), regime, features_digest))
+            cur.execute(
+                sql,
+                (run_id, horizon, Json(metrics_json or {}), regime, features_digest),
+            )
 
 
 def upsert_explanations(run_id: str, markdown: str, risk_flags: list[str]) -> None:
@@ -308,7 +338,9 @@ def insert_futures_metrics(rows: Iterable[dict]) -> int:
     return count
 
 
-def upsert_social_embedding(src_id: str, platform: str, ts: str, embedding: List[float], meta: dict) -> None:
+def upsert_social_embedding(
+    src_id: str, platform: str, ts: str, embedding: List[float], meta: dict
+) -> None:
     ensure_vector()
     sql = (
         "INSERT INTO social_index (src_id, platform, ts, dim, embedding, meta) VALUES (%s, %s, %s, %s, %s::vector, %s) "
@@ -355,7 +387,9 @@ def ensure_vector() -> None:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
 
-def upsert_feature_embedding(ts_window: str, symbol: str, embedding: List[float], meta: dict) -> None:
+def upsert_feature_embedding(
+    ts_window: str, symbol: str, embedding: List[float], meta: dict
+) -> None:
     ensure_vector()
     sql = (
         "INSERT INTO features_index (ts_window, symbol, dim, embedding, meta) VALUES (%s, %s, %s, %s::vector, %s) "
@@ -391,21 +425,29 @@ def upsert_similar_windows(run_id: str, topk_json: list) -> None:
             cur.execute(sql, (run_id, Json(topk_json)))
 
 
-def fetch_recent_predictions(limit: int = 5, horizon: str = "4h") -> list[tuple[str, str, float, float, str]]:
+def fetch_recent_predictions(
+    limit: int = 5, horizon: str = "4h"
+) -> list[tuple[str, str, float, float, str]]:
     """Fetch recent predictions for memory context.
 
     Returns list of (run_id, horizon, y_hat, proba_up, created_at_iso).
     """
-    sql = (
-        "SELECT run_id, horizon, y_hat, proba_up, created_at FROM predictions WHERE horizon=%s ORDER BY created_at DESC LIMIT %s"
-    )
+    sql = "SELECT run_id, horizon, y_hat, proba_up, created_at FROM predictions WHERE horizon=%s ORDER BY created_at DESC LIMIT %s"
     out: list[tuple[str, str, float, float, str]] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (horizon, limit))
             for r in cur.fetchall() or []:
                 rid, hz, y, p, ts = r
-                out.append((str(rid), str(hz), float(y or 0.0), float(p or 0.0), ts.isoformat() if ts else ""))
+                out.append(
+                    (
+                        str(rid),
+                        str(hz),
+                        float(y or 0.0),
+                        float(p or 0.0),
+                        ts.isoformat() if ts else "",
+                    )
+                )
     return out
 
 
@@ -419,37 +461,58 @@ def upsert_agent_prediction(agent: str, run_id: str, result_json: dict) -> None:
             cur.execute(sql, (run_id, agent, Json(result_json)))
 
 
-def insert_agent_metric(agent: str, metric: str, value: float, labels: dict | None = None, ts=None) -> None:
-    sql = (
-        "INSERT INTO agents_metrics (ts, agent, metric, value, labels) VALUES (%s, %s, %s, %s, %s)"
-    )
-    from datetime import datetime, timezone as _tz
+def insert_agent_metric(
+    agent: str, metric: str, value: float, labels: dict | None = None, ts=None
+) -> None:
+    sql = "INSERT INTO agents_metrics (ts, agent, metric, value, labels) VALUES (%s, %s, %s, %s, %s)"
+    from datetime import datetime
+    from datetime import timezone as _tz
+
     ts = ts or datetime.now(_tz.utc)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (ts, agent, metric, value, Json(labels or {})))
 
 
-def upsert_validation_report(run_id: str, status: str, items: dict, warnings: list | None = None, errors: list | None = None) -> None:
+def upsert_validation_report(
+    run_id: str,
+    status: str,
+    items: dict,
+    warnings: list | None = None,
+    errors: list | None = None,
+) -> None:
     sql = (
         "INSERT INTO validation_reports (run_id, status, items, warnings, errors) VALUES (%s, %s, %s, %s, %s) "
         "ON CONFLICT (run_id) DO UPDATE SET status=excluded.status, items=excluded.items, warnings=excluded.warnings, errors=excluded.errors"
     )
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (run_id, status, Json(items or {}), Json(warnings or []), Json(errors or [])))
+            cur.execute(
+                sql,
+                (
+                    run_id,
+                    status,
+                    Json(items or {}),
+                    Json(warnings or []),
+                    Json(errors or []),
+                ),
+            )
 
 
 def insert_backtest_result(cfg: dict, metrics: dict) -> None:
-    sql = (
-        "INSERT INTO backtest_results (cfg_json, metrics_json) VALUES (%s, %s)"
-    )
+    sql = "INSERT INTO backtest_results (cfg_json, metrics_json) VALUES (%s, %s)"
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (Json(cfg or {}), Json(metrics or {})))
 
 
-def upsert_model_registry(name: str, version: str, path_s3: str | None = None, params: dict | None = None, metrics: dict | None = None) -> None:
+def upsert_model_registry(
+    name: str,
+    version: str,
+    path_s3: str | None = None,
+    params: dict | None = None,
+    metrics: dict | None = None,
+) -> None:
     """Insert or update a model entry in model_registry table.
 
     Requires migration 011_model_registry.sql. Best-effort: swallows exceptions to not break pipeline.
@@ -461,17 +524,20 @@ def upsert_model_registry(name: str, version: str, path_s3: str | None = None, p
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (name, version, path_s3, Json(params or {}), Json(metrics or {})))
+                cur.execute(
+                    sql,
+                    (name, version, path_s3, Json(params or {}), Json(metrics or {})),
+                )
     except Exception:
         # ignore
         pass
 
 
-def fetch_predictions_for_cv(horizon: str, min_age_hours: float = 1.0) -> list[tuple[str, str, str, float, float, float, dict]]:
+def fetch_predictions_for_cv(
+    horizon: str, min_age_hours: float = 1.0
+) -> list[tuple[str, str, str, float, float, float, dict]]:
     """Return matured predictions: (run_id, horizon, created_at_iso, y_hat, pi_low, pi_high, per_model_json)."""
-    sql = (
-        "SELECT run_id, horizon, created_at, y_hat, pi_low, pi_high, per_model_json FROM predictions WHERE horizon=%s AND created_at <= now() - (%s || ' hours')::interval ORDER BY created_at DESC LIMIT 200"
-    )
+    sql = "SELECT run_id, horizon, created_at, y_hat, pi_low, pi_high, per_model_json FROM predictions WHERE horizon=%s AND created_at <= now() - (%s || ' hours')::interval ORDER BY created_at DESC LIMIT 200"
     out: list[tuple[str, str, str, float, float, float, dict]] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -479,18 +545,28 @@ def fetch_predictions_for_cv(horizon: str, min_age_hours: float = 1.0) -> list[t
             rows = cur.fetchall() or []
             for r in rows:
                 run_id, hz, created_at, y_hat, pi_low, pi_high, per_model = r
-                out.append((str(run_id), str(hz), created_at.isoformat() if created_at else None, float(y_hat or 0.0), float(pi_low or 0.0), float(pi_high or 0.0), per_model or {}))
+                out.append(
+                    (
+                        str(run_id),
+                        str(hz),
+                        created_at.isoformat() if created_at else None,
+                        float(y_hat or 0.0),
+                        float(pi_low or 0.0),
+                        float(pi_high or 0.0),
+                        per_model or {},
+                    )
+                )
     return out
 
 
-def fetch_agent_metrics(agent: str, metric_like: str, limit: int = 5) -> list[tuple[str, float]]:
+def fetch_agent_metrics(
+    agent: str, metric_like: str, limit: int = 5
+) -> list[tuple[str, float]]:
     """Fetch recent agents_metrics by agent and metric prefix.
 
     Returns list of (ts_iso, value).
     """
-    sql = (
-        "SELECT ts, value FROM agents_metrics WHERE agent=%s AND metric LIKE %s ORDER BY ts DESC LIMIT %s"
-    )
+    sql = "SELECT ts, value FROM agents_metrics WHERE agent=%s AND metric LIKE %s ORDER BY ts DESC LIMIT %s"
     out: list[tuple[str, float]] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -552,10 +628,9 @@ def get_subscription_status(user_id: int) -> tuple[str, Optional[str]]:
 def sweep_expired_subscriptions(now=None) -> int:
     ensure_subscriptions_tables()
     from datetime import datetime, timezone
+
     now = now or datetime.now(timezone.utc)
-    sql = (
-        "UPDATE subscriptions SET status='expired' WHERE status='active' AND ends_at <= %s RETURNING user_id"
-    )
+    sql = "UPDATE subscriptions SET status='expired' WHERE status='active' AND ends_at <= %s RETURNING user_id"
     count = 0
     users = []
     with get_conn() as conn:
@@ -567,20 +642,14 @@ def sweep_expired_subscriptions(now=None) -> int:
     return count
 
 
-def insert_user_feedback(user_id: int, run_id: str, rating: int | None, comment: str | None, meta: dict | None = None) -> None:
-    sql = (
-        "INSERT INTO users_feedback (user_id, run_id, rating, comment, meta) VALUES (%s, %s, %s, %s, %s)"
-    )
+def insert_user_feedback(
+    user_id: int,
+    run_id: str,
+    rating: int | None,
+    comment: str | None,
+    meta: dict | None = None,
+) -> None:
+    sql = "INSERT INTO users_feedback (user_id, run_id, rating, comment, meta) VALUES (%s, %s, %s, %s, %s)"
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (user_id, run_id, rating, comment, Json(meta or {})))
-
-
-def upsert_model_registry(name: str, version: str, path_s3: str | None, params: dict | None, metrics: dict | None) -> None:
-    sql = (
-        "INSERT INTO model_registry (name, version, path_s3, params, metrics) VALUES (%s, %s, %s, %s, %s) "
-        "ON CONFLICT (name, version) DO UPDATE SET path_s3=excluded.path_s3, params=excluded.params, metrics=excluded.metrics"
-    )
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (name, version, path_s3, Json(params or {}), Json(metrics or {})))
