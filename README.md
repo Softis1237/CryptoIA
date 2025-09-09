@@ -151,3 +151,4 @@ docker compose build --build-arg INSTALL_OPTIONALS=1 pipeline
   - Опционально включите авто‑тюнинг ARIMA: `AUTO_TUNE_ARIMA=1` (+ `ARIMA_TUNING_TRIALS`).
  - Flowise: собрать графы `explain/debate/scenario` (JSON‑схема в README), задать URL `FLOWISE_*`, включить health и ретраи.
  - Настроить Windmill расписания 00:00/12:00 и prewarm/healthcheck.
+# CryptoIA
