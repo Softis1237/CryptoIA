@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 from typing import List
@@ -83,7 +84,8 @@ def run(payload: IngestPricesLowTFInput) -> IngestPricesLowTFOutput:
     import pyarrow as pa  # type: ignore[import-not-found]
     import pyarrow.parquet as pq  # type: ignore[import-not-found]
 
-    exchange = ccxt.binance({"enableRateLimit": True})
+    provider = os.getenv("CCXT_PROVIDER", "binance")
+    exchange = getattr(ccxt, provider)({"enableRateLimit": True})
     timeframe = f"{payload.timeframe_seconds}s"
     start_ms = payload.start_ts * 1000
     end_ms = payload.end_ts * 1000

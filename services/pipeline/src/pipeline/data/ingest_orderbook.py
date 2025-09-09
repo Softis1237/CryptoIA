@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -29,7 +30,8 @@ class IngestOrderbookOutput(BaseModel):
 
 
 def run(payload: IngestOrderbookInput) -> IngestOrderbookOutput:
-    exchange = ccxt.binance()
+    provider = os.getenv("CCXT_PROVIDER", "binance")
+    exchange = getattr(ccxt, provider)({"enableRateLimit": True})
     ob = exchange.fetch_order_book(payload.symbol, limit=payload.depth)
     bids: List[List[float]] = ob.get("bids", [])[: payload.depth]
     asks: List[List[float]] = ob.get("asks", [])[: payload.depth]
