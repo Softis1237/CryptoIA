@@ -19,6 +19,7 @@ build/
 data/
 !services/pipeline/src/pipeline/data/
 artifacts/
+!services/pipeline/src/pipeline/data/
 
 # OS
 .DS_Store
