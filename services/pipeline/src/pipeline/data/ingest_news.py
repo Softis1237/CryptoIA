@@ -33,8 +33,10 @@ class IngestNewsInput(BaseModel):
     query: str = "crypto OR bitcoin"
 
 
+
     news_signals: List[dict] = Field(default_factory=list)
     news_facts: Optional[List[dict]] = None
+
 
 
 

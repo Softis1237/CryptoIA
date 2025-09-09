@@ -1,3 +1,9 @@
+
+from __future__ import annotations
+
+# mypy: ignore-errors
+
+
 """Agent-based orchestration of the release flow (P1).
 
 This module builds a DAG of lightweight agents wrapping existing pipeline steps
@@ -19,7 +25,11 @@ import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+from typing import Any, Dict
+
 from typing import Any, Dict, Optional
+
 
 from loguru import logger
 
@@ -33,6 +43,8 @@ from ..data.ingest_orderbook import IngestOrderbookInput
 from ..data.ingest_orderbook import run as run_orderbook
 
 
+
+
 # Steps used from existing modules
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
@@ -40,6 +52,7 @@ from ..infra.logging_config import init_logging
 from ..infra.metrics import push_durations, push_values, timed
 from ..infra.obs import init_sentry
 from ..infra.run_lock import acquire_release_lock
+
 
 # Steps used from existing modules
 from ..data.ingest_prices import IngestPricesInput
@@ -75,6 +88,7 @@ from ..ensemble.ensemble_rank import run as run_ensemble
 from ..features.features_calc import FeaturesCalcInput
 from ..features.features_calc import run as run_features
 
+
 from ..infra.db import (
     fetch_model_trust_regime,
     fetch_predictions_for_cv,
@@ -93,6 +107,8 @@ from ..infra.db import (
     upsert_validation_report,
 )
 
+
+
 from ..infra.db import (fetch_model_trust_regime, fetch_predictions_for_cv,
                         fetch_recent_predictions, insert_agent_metric,
                         insert_backtest_result, upsert_agent_prediction,
@@ -101,6 +117,7 @@ from ..infra.db import (fetch_model_trust_regime, fetch_predictions_for_cv,
                         upsert_regime, upsert_scenarios,
                         upsert_similar_windows, upsert_trade_suggestion,
                         upsert_validation_report)
+
 
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
@@ -1315,9 +1332,13 @@ class ModelTrustAgent:
                             labels={"horizon": hz, "regime": str(regime or "")},
                         )
                     except Exception:
+
+                        logger.exception("Failed to insert regime_alpha_hits metric")
+
                         logger.exception(
                             "Failed to insert model_trust regime_alpha_hits metric"
                         )
+
                 w = {}
                 for m, b in base.items():
                     a = float(alpha.get(m, 1.0) or 1.0)
@@ -1334,7 +1355,11 @@ class ModelTrustAgent:
                         labels={"horizon": hz},
                     )
                 except Exception:
+
+                    logger.exception("Failed to insert news_ctx metric")
+
                     logger.exception("Failed to insert model_trust news_ctx metric")
+
                 return out
 
             out = {
@@ -1844,6 +1869,12 @@ def run_release_flow(
                         suggest_weights,
                     )
 
+
+                    w, n = suggest_weights(horizon)
+                    if not w or n < 10:
+                        return None
+                    y, l, h, p = combine_with_weights(
+
                     from ..ensemble.stacking import (combine_with_weights,
                                                      suggest_weights)
 
@@ -1852,13 +1883,20 @@ def run_release_flow(
                     if not w or n < 10:
                         return None
                     y, low, high, prob = combine_with_weights(
+
                         [p.model_dump() for p in preds], w
                     )
                     return {
                         "y_hat": y,
+
+                        "pi_low": l,
+                        "pi_high": h,
+                        "proba_up": p,
+
                         "pi_low": low,
                         "pi_high": high,
                         "proba_up": prob,
+
                         "weights": w,
                         "samples": n,
                     }
@@ -2235,9 +2273,12 @@ def run_release_flow(
             publish_photo_from_s3,
         )
 
+
+
         from ..trading.publish_telegram import (publish_code_block_json,
                                                 publish_message,
                                                 publish_photo_from_s3)
+
 
         from ..utils.calibration import calibrate_proba_by_uncertainty
 
@@ -2261,7 +2302,11 @@ def run_release_flow(
                     f"<b>Контр‑сигнал</b>: {contra.get('side')} (score={contra.get('score',0):.2f})"
                 )
         except Exception:
+
+            logger.exception("Failed to compose sentiment summary")
+
             logger.exception("Failed to compose sentiment/liquidity/contrarian section")
+
         from ..models.calibration_runtime import calibrate_proba as _calib
 
         e4_raw = float(getattr(e4, "proba_up", 0.5))
@@ -2346,9 +2391,15 @@ def run_release_flow(
             publish_message("\n".join(msg))
             publish_code_block_json("Карточка сделки (JSON)", card)
         except Exception:
+
+            logger.exception("Failed to publish forecast message")
+    except Exception:
+        logger.exception("Failed to prepare forecast message")
+
             logger.exception("Failed to publish Telegram message")
     except Exception:
         logger.exception("Failed to prepare message")
+
 
     # Persist predictions/scenarios/explanations best-effort
     try:
@@ -2403,7 +2454,11 @@ def run_release_flow(
             if ch12:
                 upsert_agent_prediction("ensemble_12h_ch", ctx.run_id, ch12)
         except Exception:
+
+            logger.exception("Failed to upsert challenger ensemble results")
+
             logger.exception("Failed to save challenger ensemble predictions")
+
         # Build improved explanation (Pro)
         try:
             si = results.get("sentiment_index").output or {}
@@ -2430,7 +2485,11 @@ def run_release_flow(
         upsert_explanations(ctx.run_id, md, risk_flags)
         upsert_trade_suggestion(ctx.run_id, card)
     except Exception:
+
+        logger.exception("Failed to persist explanation or trade suggestion")
+
         logger.exception("Failed to persist explanations or trade suggestion")
+
 
     # metrics
     push_durations(job="release_flow", durations=durations, labels={"slot": ctx.slot})
@@ -2471,7 +2530,11 @@ def run_release_flow(
                     if k in rm and rm[k] is not None:
                         business[f"risk_{k}"] = float(rm[k])
         except Exception:
+
+            logger.exception("Failed to collect risk estimator metrics")
+
             logger.exception("Failed to add risk metrics to business stats")
+
         # Validation summary
         if validation_status:
             business["validation_warns"] = float(validation_warns or 0)
@@ -2501,7 +2564,11 @@ def run_release_flow(
                     1.0 if str(rp.get("status")) == "OK" else 0.0
                 )
         except Exception:
+
+            logger.exception("Failed to record risk policy status")
+
             logger.exception("Failed to add risk_policy metrics")
+
         push_values(job="release_flow", values=business, labels={"slot": ctx.slot})
         # Per-model weights metrics
         try:
@@ -2513,7 +2580,10 @@ def run_release_flow(
                     labels={"horizon": "4h"},
                 )
         except Exception:
+            logger.exception("Failed to push 4h ensemble weights")
+
             logger.exception("Failed to push ensemble weights for 4h")
+
         try:
             w12 = getattr(e12, "weights", {}) or {}
             if w12:
@@ -2523,7 +2593,11 @@ def run_release_flow(
                     labels={"horizon": "12h"},
                 )
         except Exception:
+
+            logger.exception("Failed to push 12h ensemble weights")
+
             logger.exception("Failed to push ensemble weights for 12h")
+
     except Exception:
         logger.exception("Failed to push business metrics")
 

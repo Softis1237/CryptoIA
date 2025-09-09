@@ -41,8 +41,13 @@ def call_openai_json(
         model_name: str = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
 
 
+
+        model_name: str = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+
+
         model_name = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
         # Cache lookup
+
 
         ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
         key = _hash_key("openai", model_name, system_prompt, user_prompt)
@@ -86,7 +91,11 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
 
     import requests  # type: ignore[import-untyped]
 
+
+    import requests  # type: ignore[import-untyped]
+
     import requests  # type: ignore
+
 
 
     global _LLM_CALLS, _LLM_CACHE_HITS, _LLM_FAILURES
@@ -102,6 +111,7 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
     timeout = float(os.getenv("FLOWISE_TIMEOUT_SEC", "15"))
     max_retries = int(os.getenv("FLOWISE_MAX_RETRIES", "2"))
     backoff = float(os.getenv("FLOWISE_BACKOFF_SEC", "1.0"))
+
 
 
     # Cache
@@ -131,6 +141,7 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
             _push_metrics()
             return data
 
+
             # Some Flowise nodes return stringified JSON
             if r.headers.get("content-type", "").startswith("application/json"):
                 data = r.json()
@@ -154,7 +165,11 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
 
                     f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s",
 
+
+                    f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s",
+
                     f"Flowise call failed ({url_env}) attempt {attempt+1}/{max_retries+1}: {e}; retry in {sleep_for:.1f}s"
+
 
                 )
                 time.sleep(sleep_for)
@@ -163,7 +178,6 @@ def call_flowise_json(url_env: str, payload: dict) -> Optional[dict]:
             _LLM_FAILURES += 1
             _push_metrics()
             return None
-
 
     return None
 
@@ -188,7 +202,12 @@ def _try_cache_get(key: str) -> Optional[dict]:
 
         import redis  # type: ignore[import-untyped]
 
+
+
+        import redis  # type: ignore[import-untyped]
+
         import redis  # type: ignore
+
 
 
         r = redis.Redis(
@@ -212,7 +231,11 @@ def _try_cache_put(key: str, data: dict, ttl: int) -> None:
 
         import redis  # type: ignore[import-untyped]
 
+
+        import redis  # type: ignore[import-untyped]
+
         import redis  # type: ignore
+
 
 
         r = redis.Redis(
