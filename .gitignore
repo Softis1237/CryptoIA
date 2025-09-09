@@ -17,6 +17,7 @@ build/
 
 # Data/Artifacts
 data/
+!services/pipeline/src/pipeline/data/
 artifacts/
 !services/pipeline/src/pipeline/data/
 
