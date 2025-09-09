@@ -113,3 +113,17 @@ groups:
           severity: warning
         annotations:
           description: "LLM failures detected"
+      - alert: FlowiseDown
+        expr: up{job="flowise"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          description: "Flowise service is down"
+      - alert: PaperPnLNegative
+        expr: pipeline_value{name="pnl_24h"} < 0
+        for: 60m
+        labels:
+          severity: info
+        annotations:
+          description: "Paper trading PnL over last 24h is negative"

@@ -10,10 +10,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests  # type: ignore[import-untyped]
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from textblob import TextBlob
 
 from ..infra.s3 import upload_bytes
+from ..reasoning.news_facts import extract_news_facts_batch
 
 
 class NewsSignal(BaseModel):
@@ -30,14 +31,18 @@ class IngestNewsInput(BaseModel):
     slot: str
     time_window_hours: int = 12
     query: str = "crypto OR bitcoin"
+codex/create-task-list-for-project-completion-qym2g0
+
     news_signals: List[dict] = Field(default_factory=list)
     news_facts: Optional[List[dict]] = None
+ main
 
 
 class IngestNewsOutput(BaseModel):
     run_id: str
     slot: str
     news_signals: List[NewsSignal]
+    news_facts: Optional[List[dict]] = None
     news_path_s3: str
 
 
@@ -130,6 +135,8 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             impact_score=impact,
         ))
 
+    news_facts = extract_news_facts_batch([s.model_dump() for s in signals]) or None
+
     df = pd.DataFrame([s.model_dump() for s in signals])
     table = pa.Table.from_pandas(df)
     buf = io.BytesIO()
@@ -141,5 +148,6 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
         run_id=inp.run_id,
         slot=inp.slot,
         news_signals=signals,
+        news_facts=news_facts,
         news_path_s3=news_path_s3,
     )
