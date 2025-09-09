@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests  # type: ignore[import-untyped]
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from textblob import TextBlob
 
 from ..infra.s3 import upload_bytes
@@ -31,11 +31,8 @@ class IngestNewsInput(BaseModel):
     slot: str
     time_window_hours: int = 12
     query: str = "crypto OR bitcoin"
-codex/create-task-list-for-project-completion-qym2g0
-
     news_signals: List[dict] = Field(default_factory=list)
     news_facts: Optional[List[dict]] = None
- main
 
 
 class IngestNewsOutput(BaseModel):
