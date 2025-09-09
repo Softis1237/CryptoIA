@@ -258,6 +258,41 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     df["news_neg_count"] = neg
     df["news_impact_sum"] = imp
 
+    # News topics features (from LLM) - one-hot encode top N topics
+    defined_topics = [
+        "etf",
+        "sec",
+        "regulation",
+        "hack",
+        "exploit",
+        "adoption",
+        "fomc",
+        "inflation",
+        "grayscale",
+        "blackrock",
+        "binance",
+        "coinbase",
+        "stablecoin",
+    ]
+    try:
+        topic_counts = {f"news_topic_{topic}_count": 0 for topic in defined_topics}
+
+        all_topics = []
+        for s in payload.news_signals:
+            if s.get("topics") and isinstance(s.get("topics"), list):
+                all_topics.extend([topic.lower() for topic in s.get("topics")])
+
+        for topic in defined_topics:
+            topic_counts[f"news_topic_{topic}_count"] = all_topics.count(topic)
+
+        for key, value in topic_counts.items():
+            df[key] = value
+
+    except Exception:
+        # If anything fails, just create zero-filled columns for schema consistency
+        for topic in defined_topics:
+            df[f"news_topic_{topic}_count"] = 0
+
     # News facts features (LLM) — weighted sums and counts per type/direction
     try:
         import math as _m
@@ -544,6 +579,7 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         "news_pos_count",
         "news_neg_count",
         "news_impact_sum",
+        *(f"news_topic_{t}_count" for t in defined_topics),
         "news_ctx_score",
         "ob_imbalance",
         "ob_depth_ratio",
