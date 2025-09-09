@@ -32,6 +32,15 @@ from ..data.ingest_onchain import run as run_onchain
 from ..data.ingest_orderbook import IngestOrderbookInput
 from ..data.ingest_orderbook import run as run_orderbook
 
+
+# Steps used from existing modules
+from ..data.ingest_prices import IngestPricesInput
+from ..data.ingest_prices import run as run_prices
+from ..infra.logging_config import init_logging
+from ..infra.metrics import push_durations, push_values, timed
+from ..infra.obs import init_sentry
+from ..infra.run_lock import acquire_release_lock
+
 # Steps used from existing modules
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
@@ -65,6 +74,7 @@ from ..ensemble.ensemble_rank import EnsembleInput
 from ..ensemble.ensemble_rank import run as run_ensemble
 from ..features.features_calc import FeaturesCalcInput
 from ..features.features_calc import run as run_features
+
 from ..infra.db import (
     fetch_model_trust_regime,
     fetch_predictions_for_cv,
@@ -82,6 +92,16 @@ from ..infra.db import (
     upsert_trade_suggestion,
     upsert_validation_report,
 )
+
+from ..infra.db import (fetch_model_trust_regime, fetch_predictions_for_cv,
+                        fetch_recent_predictions, insert_agent_metric,
+                        insert_backtest_result, upsert_agent_prediction,
+                        upsert_ensemble_weights, upsert_explanations,
+                        upsert_features_snapshot, upsert_prediction,
+                        upsert_regime, upsert_scenarios,
+                        upsert_similar_windows, upsert_trade_suggestion,
+                        upsert_validation_report)
+
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
 from ..reasoning.debate_arbiter import debate
@@ -1818,10 +1838,15 @@ def run_release_flow(
 
             def _stack(preds, horizon):
                 try:
+
                     from ..ensemble.stacking import (
                         combine_with_weights,
                         suggest_weights,
                     )
+
+                    from ..ensemble.stacking import (combine_with_weights,
+                                                     suggest_weights)
+
 
                     w, n = suggest_weights(horizon)
                     if not w or n < 10:
@@ -2209,6 +2234,11 @@ def run_release_flow(
             publish_message,
             publish_photo_from_s3,
         )
+
+        from ..trading.publish_telegram import (publish_code_block_json,
+                                                publish_message,
+                                                publish_photo_from_s3)
+
         from ..utils.calibration import calibrate_proba_by_uncertainty
 
         msg = []
