@@ -35,10 +35,22 @@ from ..data.ingest_prices import IngestPricesInput, run as run_prices
 from ..data.ingest_news import IngestNewsInput, run as run_news
 from ..data.ingest_orderbook import IngestOrderbookInput, run as run_orderbook
 from ..data.ingest_onchain import IngestOnchainInput, run as run_onchain
-from ..data.ingest_futures import IngestFuturesInput, run as run_futures
-from ..data.ingest_social import IngestSocialInput, run as run_social
+try:
+    from ..data.ingest_futures import IngestFuturesInput, run as run_futures
+except ImportError:  # pragma: no cover
+    IngestFuturesInput = None  # type: ignore[assignment]
+    run_futures = None  # type: ignore[assignment]
+try:
+    from ..data.ingest_social import IngestSocialInput, run as run_social
+except ImportError:  # pragma: no cover
+    IngestSocialInput = None  # type: ignore[assignment]
+    run_social = None  # type: ignore[assignment]
 from ..data.ingest_prices_lowtf import IngestPricesLowTFInput, run as run_prices_lowtf
-from ..data.ingest_altdata import IngestAltDataInput, run as run_altdata
+try:
+    from ..data.ingest_altdata import IngestAltDataInput, run as run_altdata
+except ImportError:  # pragma: no cover
+    IngestAltDataInput = None  # type: ignore[assignment]
+    run_altdata = None  # type: ignore[assignment]
 from ..features.features_calc import FeaturesCalcInput, run as run_features
 from ..regime.predictor_ml import predict as predict_regime_ml
 from ..regime.regime_detect import detect as detect_regime
@@ -140,9 +152,11 @@ class FuturesAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
+            if run_futures is None or IngestFuturesInput is None:
+                return _ok(self.name, None, meta={"skipped": True})
             if os.getenv("ENABLE_FUTURES", "0") not in {"1", "true", "True"}:
                 return _ok(self.name, None, meta={"skipped": True})
-            out = run_futures(IngestFuturesInput(**payload))
+            out = run_futures(IngestFuturesInput(**payload))  # type: ignore[misc]
             return _ok(self.name, out)
         except Exception as e:  # noqa: BLE001
             return _fail(self.name, e)
@@ -154,9 +168,11 @@ class SocialAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
+            if run_social is None or IngestSocialInput is None:
+                return _ok(self.name, None, meta={"skipped": True})
             if os.getenv("ENABLE_SOCIAL", "0") not in {"1", "true", "True"}:
                 return _ok(self.name, None, meta={"skipped": True})
-            out = run_social(IngestSocialInput(**payload))
+            out = run_social(IngestSocialInput(**payload))  # type: ignore[misc]
             return _ok(self.name, out)
         except Exception as e:  # noqa: BLE001
             return _fail(self.name, e)
@@ -182,9 +198,11 @@ class AltDataAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
+            if run_altdata is None or IngestAltDataInput is None:
+                return _ok(self.name, None, meta={"skipped": True})
             if os.getenv("ENABLE_ALT_DATA", "0") not in {"1", "true", "True"}:
                 return _ok(self.name, None, meta={"skipped": True})
-            out = run_altdata(IngestAltDataInput(**payload))
+            out = run_altdata(IngestAltDataInput(**payload))  # type: ignore[misc]
             return _ok(self.name, out)
         except Exception as e:  # noqa: BLE001
             return _fail(self.name, e)
