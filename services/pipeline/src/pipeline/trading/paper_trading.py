@@ -3,15 +3,14 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Optional
 
 import ccxt
 from loguru import logger
 
 from ..infra.db import get_conn
-from .publish_telegram import publish_message_to
 from ..infra.s3 import upload_bytes
-
+from .publish_telegram import publish_message_to
 
 SYMBOL = os.getenv("PAPER_SYMBOL", "BTC/USDT")
 
@@ -23,7 +22,9 @@ def _now_utc() -> datetime:
 def _ensure_account(start_equity: float = 1000.0) -> str:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1")
+            cur.execute(
+                "SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+            )
             row = cur.fetchone()
             if row:
                 return row[0]
@@ -37,7 +38,8 @@ def _ensure_account(start_equity: float = 1000.0) -> str:
 
 
 def _get_mark_price(symbol: str = SYMBOL) -> float:
-    ex = ccxt.binance({"enableRateLimit": True})
+    provider = os.getenv("CCXT_PROVIDER", "binance")
+    ex = getattr(ccxt, provider)({"enableRateLimit": True})
     # use spot last price for MVP
     t = ex.fetch_ticker(symbol)
     return float(t["last"]) if t and t.get("last") else float(t["close"])  # type: ignore[index]
@@ -49,9 +51,14 @@ def executor_once(run_id: Optional[str] = None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             if run_id:
-                cur.execute("SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE run_id=%s", (run_id,))
+                cur.execute(
+                    "SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE run_id=%s",
+                    (run_id,),
+                )
             else:
-                cur.execute("SELECT run_id, side, entry_zone, leverage, sl, tp, times_json FROM trades_suggestions ORDER BY created_at DESC LIMIT 1")
+                cur.execute(
+                    "SELECT run_id, side, entry_zone, leverage, sl, tp, times_json FROM trades_suggestions ORDER BY created_at DESC LIMIT 1"
+                )
             sug = cur.fetchone()
             if not sug:
                 logger.info("No trade suggestions found")
@@ -61,7 +68,10 @@ def executor_once(run_id: Optional[str] = None):
             if side == "NO-TRADE":
                 logger.info(f"Suggestion {run_id} is NO-TRADE")
                 return
-            cur.execute("SELECT 1 FROM paper_positions WHERE meta_json->>'run_id'=%s AND status='OPEN'", (run_id,))
+            cur.execute(
+                "SELECT 1 FROM paper_positions WHERE meta_json->>'run_id'=%s AND status='OPEN'",
+                (run_id,),
+            )
             if cur.fetchone():
                 logger.info(f"Position for {run_id} already open")
                 return
@@ -85,11 +95,16 @@ def executor_once(run_id: Optional[str] = None):
                 "INSERT INTO paper_trades (pos_id, ts, price, qty, side, fee, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (pos_id, _now_utc(), entry, qty, "OPEN", 0.0, "market_open"),
             )
-            logger.info(f"Opened paper position {pos_id} from suggestion {run_id} at {entry}")
+            logger.info(
+                f"Opened paper position {pos_id} from suggestion {run_id} at {entry}"
+            )
 
 
 def _close_position(cur, pos_id: str, exit_price: float, reason: str):
-    cur.execute("SELECT side, entry, qty FROM paper_positions WHERE pos_id=%s FOR UPDATE", (pos_id,))
+    cur.execute(
+        "SELECT side, entry, qty FROM paper_positions WHERE pos_id=%s FOR UPDATE",
+        (pos_id,),
+    )
     side, entry, qty = cur.fetchone()
     side = str(side)
     entry = float(entry)
@@ -105,10 +120,15 @@ def _close_position(cur, pos_id: str, exit_price: float, reason: str):
         (pos_id, _now_utc(), exit_price, qty, "CLOSE", 0.0, reason),
     )
     # Update PNL and account equity
-    cur.execute("INSERT INTO paper_pnl (pos_id, realized_pnl) VALUES (%s, %s) ON CONFLICT (pos_id) DO UPDATE SET realized_pnl=excluded.realized_pnl", (pos_id, pnl))
+    cur.execute(
+        "INSERT INTO paper_pnl (pos_id, realized_pnl) VALUES (%s, %s) ON CONFLICT (pos_id) DO UPDATE SET realized_pnl=excluded.realized_pnl",
+        (pos_id, pnl),
+    )
     cur.execute("SELECT account_id FROM paper_positions WHERE pos_id=%s", (pos_id,))
     account_id = cur.fetchone()[0]
-    cur.execute("UPDATE paper_accounts SET equity = equity + %s WHERE id=%s", (pnl, account_id))
+    cur.execute(
+        "UPDATE paper_accounts SET equity = equity + %s WHERE id=%s", (pnl, account_id)
+    )
     # Record equity curve point
     cur.execute("SELECT equity FROM paper_accounts WHERE id=%s", (account_id,))
     equity = float(cur.fetchone()[0])
@@ -124,7 +144,9 @@ def risk_loop(interval_s: int = 60):
             price = _get_mark_price()
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT pos_id, side, sl, tp FROM paper_positions WHERE status='OPEN'")
+                    cur.execute(
+                        "SELECT pos_id, side, sl, tp FROM paper_positions WHERE status='OPEN'"
+                    )
                     rows = cur.fetchall()
                     for pos_id, side, sl, tp in rows:
                         side = str(side)
@@ -140,7 +162,9 @@ def risk_loop(interval_s: int = 60):
             try:
                 with get_conn() as conn:
                     with conn.cursor() as cur:
-                        cur.execute("SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1")
+                        cur.execute(
+                            "SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+                        )
                         row = cur.fetchone()
                         if row:
                             acc_id, eq = row
@@ -168,18 +192,18 @@ def settler_loop(interval_s: int = 60):
                         "WHERE p.status='OPEN'"
                     )
                     rows = cur.fetchall() or []
-                    for pos_id, side, entry, qty, run_id, horizon_end in rows:
-                        if not horizon_end:
-                            continue
-                        try:
-                            from dateutil.parser import isoparse
+            for pos_id, side, entry, qty, run_id, horizon_end in rows:
+                if not horizon_end:
+                    continue
+                try:
+                    import dateutil.parser  # type: ignore[import-not-found, import-untyped]
 
-                            horizon_dt = isoparse(horizon_end)
-                        except Exception:
-                            continue
-                        if now >= horizon_dt:
-                            price = _get_mark_price()
-                            _close_position(cur, pos_id, price, "horizon_close")
+                    horizon_dt = dateutil.parser.isoparse(horizon_end)
+                except Exception:
+                    continue
+                if now >= horizon_dt:
+                    price = _get_mark_price()
+                    _close_position(cur, pos_id, price, "horizon_close")
         except Exception as e:  # noqa: BLE001
             logger.exception(f"settler_loop error: {e}")
         time.sleep(interval_s)
@@ -196,7 +220,9 @@ def admin_report():
     day_ago = now - timedelta(days=1)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, equity, start_equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1")
+            cur.execute(
+                "SELECT id, equity, start_equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+            )
             acc = cur.fetchone()
             if not acc:
                 publish_message_to(admin_chat, "Paper: аккаунт не найден")
@@ -226,15 +252,18 @@ def admin_weekly_report():
     if not admin_chat:
         logger.warning("No admin chat configured; skipping weekly report")
         return
-    from datetime import timedelta
     import io
+    from datetime import timedelta
+
     import matplotlib.pyplot as plt
 
     now = _now_utc()
     week_ago = now - timedelta(days=7)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, start_equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1")
+            cur.execute(
+                "SELECT id, start_equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+            )
             acc_row = cur.fetchone()
             if not acc_row:
                 publish_message_to(admin_chat, "Paper: аккаунт не найден")

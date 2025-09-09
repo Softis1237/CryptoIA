@@ -1,10 +1,6 @@
-codex/create-ingest_news.py-for-news-ingestion
-from .ingest_news import IngestNewsInput, IngestNewsOutput, run
+"""Data ingestion package."""
 
-__all__ = [
-    "IngestNewsInput",
-    "IngestNewsOutput",
-    "run",
-]
-"""Data ingestion modules."""
- main
+from .ingest_news import IngestNewsInput, IngestNewsOutput
+from .ingest_news import run as ingest_news_run
+
+__all__ = ["IngestNewsInput", "IngestNewsOutput", "ingest_news_run"]
