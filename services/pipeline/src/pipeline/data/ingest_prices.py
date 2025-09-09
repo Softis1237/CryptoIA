@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import io
 import os
-import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 import ccxt
@@ -20,7 +20,6 @@ class IngestPricesInput(BaseModel):
     symbols: List[str]
     start_ts: int
     end_ts: int
-    prices_path_s3: str
 
 
 class IngestPricesOutput(BaseModel):
@@ -32,17 +31,7 @@ class IngestPricesOutput(BaseModel):
     prices_path_s3: str
 
 
-def _validate_path(path: str, slot: str) -> None:
-    pattern = rf"^runs/\d{{4}}-\d{{2}}-\d{{2}}/{re.escape(slot)}/prices\.parquet$"
-    if not re.match(pattern, path):
-        raise ValueError(
-            "prices_path_s3 must match runs/{YYYY-MM-DD}/{slot}/prices.parquet"
-        )
-
-
 def run(payload: IngestPricesInput) -> IngestPricesOutput:
-    _validate_path(payload.prices_path_s3, payload.slot)
-
     provider_name = os.getenv("CCXT_PROVIDER", "binance")
     ex_cls = getattr(ccxt, provider_name)
     ex = ex_cls({"enableRateLimit": True})
@@ -56,15 +45,62 @@ def run(payload: IngestPricesInput) -> IngestPricesOutput:
             if ts > payload.end_ts:
                 break
             rows.append(
-                {"ts": ts, "open": o, "high": h, "low": low, "close": c, "volume": v}
+                {
+                    "ts": ts,
+                    "open": o,
+                    "high": h,
+                    "low": low,
+                    "close": c,
+                    "volume": v,
+                    "symbol": symbol,
+                }
             )
 
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
-    table = pa.Table.from_pandas(df)
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    s3_uri = upload_bytes(
-        payload.prices_path_s3, buf.getvalue(), content_type="application/parquet"
+    df = pd.DataFrame(
+        rows, columns=["ts", "open", "high", "low", "close", "volume", "symbol"]
     )
 
-    return IngestPricesOutput(**payload.dict(), prices_path_s3=s3_uri)
+    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    slot = payload.slot or "manual"
+    local_dir = Path(f"runs/{date_key}/{slot}")
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_dir / "prices.parquet"
+
+    table = pa.Table.from_pandas(df)
+    pq.write_table(table, local_path)
+
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink, compression="zstd")
+    s3_uri = upload_bytes(
+        str(local_path),
+        sink.getvalue().to_pybytes(),
+        content_type="application/octet-stream",
+    )
+
+    return IngestPricesOutput(
+        run_id=payload.run_id,
+        slot=payload.slot,
+        symbols=payload.symbols,
+        start_ts=payload.start_ts,
+        end_ts=payload.end_ts,
+        prices_path_s3=s3_uri,
+    )
+
+
+def main() -> None:
+    import sys
+
+    if len(sys.argv) != 2:
+        print(
+            "Usage: python -m pipeline.data.ingest_prices '<json_payload>'",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    payload_raw = sys.argv[1]
+    payload = IngestPricesInput.model_validate_json(payload_raw)
+    out = run(payload)
+    print(out.model_dump_json())
+
+
+if __name__ == "__main__":
+    main()
