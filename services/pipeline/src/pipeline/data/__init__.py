@@ -1,5 +1,8 @@
 """Data ingestion modules."""
 
+codex/create-ingest_news.py-and-data-models
+from .ingest_news import IngestNewsInput, IngestNewsOutput, run
+
 from .ingest_news import IngestNewsInput, IngestNewsOutput
  codex/create-ingest_onchain.py-for-metrics
 from .ingest_news import run as run_news
@@ -16,6 +19,7 @@ from .ingest_prices import run as ingest_prices
 from .ingest_prices_lowtf import (IngestPricesLowTFInput,
                                   IngestPricesLowTFOutput)
 from .ingest_prices_lowtf import run as ingest_prices_lowtf
+main
 main
 
 __all__ = [
