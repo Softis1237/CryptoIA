@@ -15,7 +15,10 @@ def _build_exchange() -> ccxt.Exchange:
     secret = os.getenv("EXCHANGE_SECRET")
     password = os.getenv("EXCHANGE_PASSWORD")
     default_type = os.getenv("EXCHANGE_TYPE", "spot")  # spot|future|swap
-    params: Dict[str, Any] = {"enableRateLimit": True, "options": {"defaultType": default_type}}
+    params: Dict[str, Any] = {
+        "enableRateLimit": True,
+        "options": {"defaultType": default_type},
+    }
     if api_key and secret:
         params.update({"apiKey": api_key, "secret": secret})
         if password:
@@ -44,22 +47,57 @@ class ExchangeClient:
         return float(px)
 
     def get_balance(self, code: str) -> float:
-        bal = self.ex.fetch_balance()
+        try:
+            bal = self.ex.fetch_balance()
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"fetch_balance failed for {code}: {e}")
+            raise
         total = (bal.get("total") or {}).get(code)
         if total is None:
             # try free
             total = (bal.get("free") or {}).get(code, 0.0)
         return float(total or 0.0)
 
-    def create_market(self, symbol: str, side: str, amount: float, params: Optional[dict] = None) -> OrderResult:
+    def create_market(
+        self, symbol: str, side: str, amount: float, params: Optional[dict] = None
+    ) -> OrderResult:
         o = self.ex.create_order(symbol, "market", side, amount, None, params or {})
-        return OrderResult(id=str(o.get("id")), type="market", side=side, amount=float(amount), price=None, info=o)
+        return OrderResult(
+            id=str(o.get("id")),
+            type="market",
+            side=side,
+            amount=float(amount),
+            price=None,
+            info=o,
+        )
 
-    def create_limit(self, symbol: str, side: str, amount: float, price: float, params: Optional[dict] = None) -> OrderResult:
+    def create_limit(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: float,
+        params: Optional[dict] = None,
+    ) -> OrderResult:
         o = self.ex.create_order(symbol, "limit", side, amount, price, params or {})
-        return OrderResult(id=str(o.get("id")), type="limit", side=side, amount=float(amount), price=float(price), info=o)
+        return OrderResult(
+            id=str(o.get("id")),
+            type="limit",
+            side=side,
+            amount=float(amount),
+            price=float(price),
+            info=o,
+        )
 
-    def create_stop(self, symbol: str, side: str, amount: float, stop_price: float, reduce_only: bool = True, params: Optional[dict] = None) -> OrderResult:
+    def create_stop(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        stop_price: float,
+        reduce_only: bool = True,
+        params: Optional[dict] = None,
+    ) -> OrderResult:
         p = params.copy() if params else {}
         # Try common keys for conditional orders across exchanges
         p.setdefault("stopPrice", stop_price)
@@ -73,23 +111,33 @@ class ExchangeClient:
             logger.debug(f"create_stop fallback: {e}; trying params-only trigger")
             # fallback to market with params
             o = self.ex.create_order(symbol, "market", side, amount, None, p)
-        return OrderResult(id=str(o.get("id")), type="stop", side=side, amount=float(amount), price=None, info=o)
+        return OrderResult(
+            id=str(o.get("id")),
+            type="stop",
+            side=side,
+            amount=float(amount),
+            price=None,
+            info=o,
+        )
 
     def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> None:
         try:
             self.ex.cancel_order(order_id, symbol)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                f"cancel_order failed for id={order_id} symbol={symbol}: {e}"
+            )
+            raise
 
     def fetch_open_orders(self, symbol: Optional[str] = None) -> list[dict]:
         try:
             return self.ex.fetch_open_orders(symbol)
-        except Exception:
-            return []
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"fetch_open_orders failed for symbol={symbol}: {e}")
+            raise
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         try:
             self.ex.set_leverage(leverage, symbol)
         except Exception:
             pass
-
