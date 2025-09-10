@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 from loguru import logger
 
 from .llm import call_flowise_json, call_openai_json
 
 
-def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = None) -> List[Dict[str, Any]]:
+def extract_news_facts_batch(
+    news: List[Dict[str, Any]], top_k: int | None = None
+) -> List[Dict[str, Any]]:
     """Extract structured facts from news items via OpenAI JSON mode.
 
     Input items: {id, ts, title, source, sentiment?, impact_score?}
@@ -20,7 +22,9 @@ def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = Non
             return []
         if os.getenv("ENABLE_NEWS_FACTS", "0") not in {"1", "true", "True"}:
             return []
-        items = sorted(news, key=lambda x: float(x.get("impact_score", 0.0) or 0.0), reverse=True)
+        items = sorted(
+            news, key=lambda x: float(x.get("impact_score", 0.0) or 0.0), reverse=True
+        )
         if top_k is None:
             top_k = int(os.getenv("NEWS_FACTS_TOPK", "10"))
         items = items[: max(1, top_k)]
@@ -45,10 +49,14 @@ def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = Non
             "Skip vague or non-crypto events. If multiple events in one headline, split into separate items.\n"
             f"Input: {compact}"
         )
-        data = call_flowise_json("FLOWISE_NEWS_URL", {"system": system, "user": user}) or call_openai_json(
-            system_prompt=system, user_prompt=user, model=os.getenv("OPENAI_MODEL_NEWS_FACTS")
-        )
-        if not isinstance(data, dict):
+        data = call_flowise_json("FLOWISE_NEWS_URL", {"system": system, "user": user})
+        if not data or data.get("status") == "error":
+            data = call_openai_json(
+                system_prompt=system,
+                user_prompt=user,
+                model=os.getenv("OPENAI_MODEL_NEWS_FACTS"),
+            )
+        if not isinstance(data, dict) or data.get("status") == "error":
             return []
         facts = data.get("facts") or data.get("events") or []
         if not isinstance(facts, list):
@@ -57,7 +65,16 @@ def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = Non
             else:
                 return []
         # normalize
-        allowed_types = {"SEC_ACTION", "ETF_APPROVAL", "HACK", "FORK", "LISTING", "MACRO", "RUMOR_RETRACTION", "OTHER"}
+        allowed_types = {
+            "SEC_ACTION",
+            "ETF_APPROVAL",
+            "HACK",
+            "FORK",
+            "LISTING",
+            "MACRO",
+            "RUMOR_RETRACTION",
+            "OTHER",
+        }
         allowed_dir = {"bull", "bear", "volatility", "neutral"}
         out: List[Dict[str, Any]] = []
         for f in facts:
@@ -77,19 +94,20 @@ def extract_news_facts_batch(news: List[Dict[str, Any]], top_k: int | None = Non
                 entities = f.get("entities") or []
                 if not isinstance(entities, list):
                     entities = [str(entities)]
-                out.append({
-                    "src_id": src_id,
-                    "ts": ts,
-                    "type": typ,
-                    "direction": direction,
-                    "magnitude": mag,
-                    "confidence": conf,
-                    "entities": entities,
-                })
+                out.append(
+                    {
+                        "src_id": src_id,
+                        "ts": ts,
+                        "type": typ,
+                        "direction": direction,
+                        "magnitude": mag,
+                        "confidence": conf,
+                        "entities": entities,
+                    }
+                )
             except Exception:
                 continue
         return out
     except Exception as e:  # noqa: BLE001
         logger.warning(f"extract_news_facts_batch failed: {e}")
         return []
-

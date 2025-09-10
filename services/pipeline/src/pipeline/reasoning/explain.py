@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
-from loguru import logger
-
-from .llm import call_openai_json, call_flowise_json
+from .llm import call_flowise_json, call_openai_json
 from .schemas import ExplainResponse
 
 
-def explain_short(y_hat_4h: float, p_up_4h: float, news_points: List[str], rationale_points: List[str]) -> str:
+def explain_short(
+    y_hat_4h: float, p_up_4h: float, news_points: List[str], rationale_points: List[str]
+) -> str:
     sys = (
         "Ты финансовый аналитик. Кратко объясни прогноз строго на основе входных данных (grounded-only).\n"
-        "Формат: JSON строго {\"bullets\":[string,...]} без лишних полей. 2–4 пункта.\n"
+        'Формат: JSON строго {"bullets":[string,...]} без лишних полей. 2–4 пункта.\n'
         "Запрет: не придумывай числа и факты, используй только y_hat, p_up, аргументы ансамбля и названия новостей."
     )
     usr = (
@@ -20,10 +20,12 @@ def explain_short(y_hat_4h: float, p_up_4h: float, news_points: List[str], ratio
         f"Новости: {news_points}."
     )
     # Try Flowise if configured
-    raw = call_flowise_json("FLOWISE_EXPLAIN_URL", {"system": sys, "user": usr}) or call_openai_json(sys, usr)
+    raw = call_flowise_json("FLOWISE_EXPLAIN_URL", {"system": sys, "user": usr})
+    if not raw or raw.get("status") == "error":
+        raw = call_openai_json(sys, usr)
     data = None
     try:
-        if raw:
+        if raw and raw.get("status") != "error":
             data = ExplainResponse.model_validate(raw)
     except Exception:
         data = None
@@ -31,9 +33,13 @@ def explain_short(y_hat_4h: float, p_up_4h: float, news_points: List[str], ratio
         # Fallback
         pts = []
         if rationale_points:
-            pts.append(f"Ансамбль даёт p_up≈{p_up_4h:.2f} на 4h с учётом исторической ошибки.")
+            pts.append(
+                f"Ансамбль даёт p_up≈{p_up_4h:.2f} на 4h с учётом исторической ошибки."
+            )
         if news_points:
-            pts.append("Новости нейтральны/умеренные; реакция рынка учтена в интервалах.")
+            pts.append(
+                "Новости нейтральны/умеренные; реакция рынка учтена в интервалах."
+            )
         if not pts:
             pts = ["Техническая картина и волатильность учтены в прогнозе."]
         return "\n".join(f"• {p}" for p in pts[:3])
