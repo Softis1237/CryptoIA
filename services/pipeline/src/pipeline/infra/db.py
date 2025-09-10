@@ -529,8 +529,7 @@ def upsert_model_registry(
                     (name, version, path_s3, Json(params or {}), Json(metrics or {})),
                 )
     except Exception:
-        # ignore
-        pass
+        logger.warning("Failed to upsert model_registry", exc_info=True)
 
 
 def fetch_predictions_for_cv(
