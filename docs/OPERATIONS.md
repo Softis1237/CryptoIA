@@ -12,6 +12,11 @@ docker compose up -d --build
 docker compose run --rm pipeline python -m pipeline.orchestration.agent_flow --slot=manual
 ```
 
+Проверка здоровья:
+
+- HTTP эндпоинт `http://localhost:8000/health` возвращает `OK`, если доступны Postgres и S3.
+- При `FAIL` проверьте логи контейнеров и настройки подключения.
+
 Метрики Prometheus:
 - Укажите `PROM_PUSHGATEWAY_URL`.
 - Пушатся: `pipeline_step_seconds`, `pipeline_value` (бизнес/валид./риск метрики).
