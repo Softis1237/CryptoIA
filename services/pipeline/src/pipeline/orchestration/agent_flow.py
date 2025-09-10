@@ -1941,7 +1941,7 @@ def run_release_flow(
 
             l4, h4 = _interval(y_hat, atr, 240)
             l12, h12 = _interval(y_hat, atr, 720)
-            cv_stub = {"smape": 20.0, "da": 0.5, "source": "llm"}
+            cv_stub = {"source": "llm"}
             llm_pred4 = {
                 "model": "llm_news",
                 "y_hat": y_hat,
