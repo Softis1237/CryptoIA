@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
-from ..reasoning.llm import call_openai_json, call_flowise_json
 from ..mcp.client import call_tool as mcp_call
-from ..reasoning.schemas import ScenarioResponse, ScenarioItem
-from .scenario_modeler import run as fallback_scenarios, ScenarioModelerInput
+from ..reasoning.llm import call_flowise_json, call_openai_json
+from ..reasoning.schemas import ScenarioItem, ScenarioResponse
+from .scenario_modeler import ScenarioModelerInput
+from .scenario_modeler import run as fallback_scenarios
 
 
 def run_llm_or_fallback(
@@ -23,15 +24,24 @@ def run_llm_or_fallback(
     facts = {}
     try:
         # last features row basics
-        tail = mcp_call("get_features_tail", {"features_s3": features_path_s3, "n": 1}) or {}
-        levels = mcp_call("levels_quantiles", {"features_s3": features_path_s3, "qs": [0.2, 0.5, 0.8]}) or {}
+        tail = (
+            mcp_call("get_features_tail", {"features_s3": features_path_s3, "n": 1})
+            or {}
+        )
+        levels = (
+            mcp_call(
+                "levels_quantiles",
+                {"features_s3": features_path_s3, "qs": [0.2, 0.5, 0.8]},
+            )
+            or {}
+        )
         facts = {"tail": tail, "levels": levels}
     except Exception:
         facts = {}
 
     sys = (
         "Ты помощник по сценариям BTC. Сформируй 5 веток (grounded-only), строго JSON: "
-        "{\"scenarios\":[{\"if_level\":string,\"then_path\":string,\"prob\":number,\"invalidation\":string}],\"levels\":[number,...]}.\n"
+        '{"scenarios":[{"if_level":string,"then_path":string,"prob":number,"invalidation":string}],"levels":[number,...]}.\n'
         "Правила: вероятности суммарно ≈1; не противоречь риск‑политике (SL/TP/плечо ≤25x); не придумывай числа — используй близкие уровни к текущей цене и ATR‑масштаб."
     )
     oc = onchain_context or {}
@@ -41,16 +51,25 @@ def run_llm_or_fallback(
         f"facts={facts}.\n"
         f"onchain={oc}. macro_flags={mf}. events={event_hypotheses or []}. Сформулируй 5 коротких веток с вероятностями и инвалидацией, опираясь только на facts/ончейн/макро/события."
     )
-    raw = call_flowise_json("FLOWISE_SCENARIO_URL", {"system": sys, "user": usr}) or call_openai_json(sys, usr)
+    raw = call_flowise_json("FLOWISE_SCENARIO_URL", {"system": sys, "user": usr})
+    if not raw or raw.get("status") == "error":
+        raw = call_openai_json(sys, usr)
     data = None
     try:
-        if raw:
+        if raw and raw.get("status") != "error":
             data = ScenarioResponse.model_validate(raw)
     except Exception:
         data = None
     if not data or not data.scenarios:
         logger.warning("scenario_helper: LLM unavailable, using heuristic fallback")
-        return fallback_scenarios(ScenarioModelerInput(features_path_s3=features_path_s3, current_price=current_price, atr=atr, slot=slot))
+        return fallback_scenarios(
+            ScenarioModelerInput(
+                features_path_s3=features_path_s3,
+                current_price=current_price,
+                atr=atr,
+                slot=slot,
+            )
+        )
     scenarios = [s.model_dump() for s in data.scenarios]
     levels = data.levels or []
     # sanitize
@@ -62,7 +81,14 @@ def run_llm_or_fallback(
         except Exception:
             continue
     if not out:
-        return fallback_scenarios(ScenarioModelerInput(features_path_s3=features_path_s3, current_price=current_price, atr=atr, slot=slot))
+        return fallback_scenarios(
+            ScenarioModelerInput(
+                features_path_s3=features_path_s3,
+                current_price=current_price,
+                atr=atr,
+                slot=slot,
+            )
+        )
     # normalize probs
     total = sum(s["prob"] for s in out) or 1.0
     for s in out:
