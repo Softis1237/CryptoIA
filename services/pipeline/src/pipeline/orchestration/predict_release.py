@@ -1,51 +1,71 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from typing import cast
 
 from loguru import logger
-from zoneinfo import ZoneInfo
 
-from ..data.ingest_prices import IngestPricesInput, run as run_prices
-from ..data.ingest_news import IngestNewsInput, run as run_news
-from ..data.ingest_orderbook import IngestOrderbookInput, run as run_orderbook
-from ..data.ingest_onchain import IngestOnchainInput, run as run_onchain
-from ..features.features_calc import FeaturesCalcInput, run as run_features
-from ..models.models import ModelsInput, run as run_models
-from ..ensemble.ensemble_rank import EnsembleInput, run as run_ensemble
-from ..trading.trade_recommend import TradeRecommendInput, run as run_trade
-from ..trading.verifier import verify
-from ..trading.publish_telegram import publish_message, publish_photo_from_s3, publish_code_block_json
+from ..data.ingest_news import IngestNewsInput
+from ..data.ingest_news import run as run_news
+from ..data.ingest_onchain import IngestOnchainInput
+from ..data.ingest_onchain import run as run_onchain
+from ..data.ingest_orderbook import IngestOrderbookInput
+from ..data.ingest_orderbook import run as run_orderbook
+from ..data.ingest_prices import IngestPricesInput
+from ..data.ingest_prices import run as run_prices
+from ..ensemble.ensemble_rank import EnsembleInput
+from ..ensemble.ensemble_rank import run as run_ensemble
+from ..features.features_calc import FeaturesCalcInput
+from ..features.features_calc import run as run_features
 from ..infra.db import (
-    upsert_prediction,
-    upsert_ensemble_weights,
-    upsert_scenarios,
-    upsert_trade_suggestion,
-    upsert_regime,
     log_error,
+    upsert_ensemble_weights,
     upsert_explanations,
     upsert_features_snapshot,
+    upsert_prediction,
+    upsert_regime,
+    upsert_scenarios,
+    upsert_trade_suggestion,
 )
-from ..reasoning.explain import explain_short
-from ..reasoning.debate_arbiter import debate
-from ..regime.regime_detect import detect as detect_regime
-from ..regime.predictor_ml import predict as predict_regime_ml
-from ..similarity.similar_past import run as run_similar, SimilarPastInput
-from ..scenarios.scenario_modeler import ScenarioModelerInput, run as run_scenarios
-from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios_llm
-from ..reporting.charts import plot_price_with_levels
-from ..utils.calibration import calibrate_proba_by_uncertainty
-from ..infra.metrics import timed, push_durations, push_values
+from ..infra.metrics import push_durations, push_values, timed
 from ..infra.obs import init_sentry
-from ..reporting.release_report import save_release_report
 from ..infra.run_lock import acquire_release_lock
-from .agent_flow import run_release_flow
+from ..models.models import ModelsInput
+from ..models.models import run as run_models
+from ..reasoning.debate_arbiter import debate
+from ..reasoning.explain import explain_short
+from ..regime.predictor_ml import predict as predict_regime_ml
+from ..regime.regime_detect import Regime
+from ..regime.regime_detect import detect as detect_regime
+from ..reporting.charts import plot_price_with_levels
+from ..reporting.release_report import save_release_report
+from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios_llm
+from ..similarity.similar_past import SimilarPastInput
+from ..similarity.similar_past import run as run_similar
+from ..trading.publish_telegram import (
+    publish_code_block_json,
+    publish_message,
+    publish_photo_from_s3,
+)
+from ..trading.trade_recommend import TradeRecommendInput
+from ..trading.trade_recommend import run as run_trade
+from ..trading.verifier import verify
+from ..utils.calibration import calibrate_proba_by_uncertainty
 
 
-def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hours_12h: int = 12):
+def predict_release(
+    slot: str = "manual", horizon_hours_4h: int = 4, horizon_hours_12h: int = 12
+):
     # Optional: delegate to AgentCoordinator-based DAG
     if os.getenv("USE_COORDINATOR", "0") in {"1", "true", "True"}:
-        run_release_flow(slot=slot, horizon_hours_4h=horizon_hours_4h, horizon_hours_12h=horizon_hours_12h)
+        from .agent_flow import run_release_flow
+
+        run_release_flow(
+            slot=slot,
+            horizon_hours_4h=horizon_hours_4h,
+            horizon_hours_12h=horizon_hours_12h,
+        )
         return
     now = datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
@@ -56,11 +76,13 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
         logger.info(f"Skip predict_release: lock exists for {lock_key}")
         return
 
-    durations = {}
+    durations: dict[str, float] = {}
     # Ingest prices (last 72h for modeling)
     end_ts = int(now.timestamp())
     start_ts = end_ts - 72 * 3600
-    p_in = IngestPricesInput(run_id=run_id, slot=slot, symbols=["BTCUSDT"], start_ts=start_ts, end_ts=end_ts)
+    p_in = IngestPricesInput(
+        run_id=run_id, slot=slot, symbols=["BTCUSDT"], start_ts=start_ts, end_ts=end_ts
+    )
     with timed(durations, "ingest_prices"):
         p_out = run_prices(p_in)
 
@@ -74,7 +96,11 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
     if os.getenv("ENABLE_ORDERBOOK", "0") in {"1", "true", "True"}:
         try:
             with timed(durations, "ingest_orderbook"):
-                ob_out = run_orderbook(IngestOrderbookInput(run_id=run_id, slot=slot, symbol="BTCUSDT", depth=50))
+                ob_out = run_orderbook(
+                    IngestOrderbookInput(
+                        run_id=run_id, slot=slot, symbol="BTCUSDT", depth=50
+                    )
+                )
                 ob_meta = ob_out.meta
         except Exception:
             ob_meta = None
@@ -84,7 +110,9 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
     if os.getenv("ENABLE_ONCHAIN", "0") in {"1", "true", "True"}:
         try:
             with timed(durations, "ingest_onchain"):
-                oc_out = run_onchain(IngestOnchainInput(run_id=run_id, slot=slot, asset="BTC"))
+                oc_out = run_onchain(
+                    IngestOnchainInput(run_id=run_id, slot=slot, asset="BTC")
+                )
                 onchain_signals = [s.model_dump() for s in oc_out.onchain_signals]
         except Exception:
             onchain_signals = []
@@ -110,7 +138,11 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
     with timed(durations, "regime_detect"):
         try:
             rml = predict_regime_ml(f_out.features_path_s3)
-            regime = type("Regime", (), {"label": rml.label, "confidence": float(max(rml.proba.values() or [0.0])), "features": rml.features})
+            regime = Regime(
+                label=rml.label,
+                confidence=float(max(rml.proba.values() or [0.0])),
+                features=rml.features,
+            )
         except Exception:
             regime = detect_regime(f_out.features_path_s3)
     try:
@@ -121,7 +153,14 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
     # Similar past windows
     neighbors = []
     try:
-        neighbors = [n.__dict__ for n in run_similar(SimilarPastInput(features_path_s3=f_out.features_path_s3, symbol="BTCUSDT", k=5))]
+        neighbors = [
+            n.__dict__
+            for n in run_similar(
+                SimilarPastInput(
+                    features_path_s3=f_out.features_path_s3, symbol="BTCUSDT", k=5
+                )
+            )
+        ]
         from ..infra.db import upsert_similar_windows as _up_sw
 
         _up_sw(run_id, neighbors)
@@ -130,14 +169,28 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
 
     # Models 4h / 12h
     with timed(durations, "models_4h"):
-        m4 = run_models(ModelsInput(features_path_s3=f_out.features_path_s3, horizon_minutes=horizon_hours_4h * 60))
+        m4 = run_models(
+            ModelsInput(
+                features_path_s3=f_out.features_path_s3,
+                horizon_minutes=horizon_hours_4h * 60,
+            )
+        )
     with timed(durations, "models_12h"):
-        m12 = run_models(ModelsInput(features_path_s3=f_out.features_path_s3, horizon_minutes=horizon_hours_12h * 60))
+        m12 = run_models(
+            ModelsInput(
+                features_path_s3=f_out.features_path_s3,
+                horizon_minutes=horizon_hours_12h * 60,
+            )
+        )
 
     with timed(durations, "ensemble_4h"):
-        e4 = run_ensemble(EnsembleInput(preds=[p.model_dump() for p in m4.preds], horizon="4h"))
+        e4 = run_ensemble(
+            EnsembleInput(preds=[p.model_dump() for p in m4.preds], horizon="4h")
+        )
     with timed(durations, "ensemble_12h"):
-        e12 = run_ensemble(EnsembleInput(preds=[p.model_dump() for p in m12.preds], horizon="12h"))
+        e12 = run_ensemble(
+            EnsembleInput(preds=[p.model_dump() for p in m12.preds], horizon="12h")
+        )
 
     # Trade recommendation (4h as primary)
     trade = run_trade(
@@ -158,7 +211,13 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
             horizon_minutes=horizon_hours_4h * 60,
         )
     )
-    ok, reason = verify(trade, current_price=m4.last_price, leverage_cap=25.0, interval=e4.interval, atr=m4.atr)
+    ok, reason = verify(
+        trade,
+        current_price=m4.last_price,
+        leverage_cap=25.0,
+        interval=e4.interval,
+        atr=m4.atr,
+    )
 
     # News-aware veto: if high-impact recent news contradicts direction, mark NO-TRADE
     try:
@@ -179,7 +238,9 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
                     continue
             except Exception:
                 continue
-            if (sent == "positive" and not trade_is_long) or (sent == "negative" and trade_is_long):
+            if (sent == "positive" and not trade_is_long) or (
+                sent == "negative" and trade_is_long
+            ):
                 veto = True
                 break
         if veto:
@@ -190,36 +251,57 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
 
     # Scenarios + chart
     with timed(durations, "scenarios"):
-        scenarios, lvls = run_scenarios_llm(f_out.features_path_s3, current_price=m4.last_price, atr=m4.atr, slot=slot)
+        scenarios, lvls = run_scenarios_llm(
+            f_out.features_path_s3, current_price=m4.last_price, atr=m4.atr, slot=slot
+        )
     with timed(durations, "chart_render"):
         chart_s3 = plot_price_with_levels(
-        f_out.features_path_s3,
-        title=f"BTC {slot} — 4h/12h прогноз",
-        y_hat_4h=e4.y_hat,
-        y_hat_12h=e12.y_hat,
-        levels=lvls,
-        slot=slot,
-    )
+            f_out.features_path_s3,
+            title=f"BTC {slot} — 4h/12h прогноз",
+            y_hat_4h=e4.y_hat,
+            y_hat_12h=e12.y_hat,
+            levels=lvls,
+            slot=slot,
+        )
 
     # Explain / Debate (LLM if доступен)
     news_points = [f"{s.title} ({s.source})" for s in n_out.news_signals[:3]]
-    deb_text, risk_flags = debate(rationale_points=e4.rationale_points, regime=regime.label, news_top=news_points, neighbors=neighbors)
+    deb_text, risk_flags = debate(
+        rationale_points=e4.rationale_points,
+        regime=regime.label,
+        news_top=news_points,
+        neighbors=neighbors,
+    )
     expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
 
     msg = []
     msg.append(f"<b>BTC Forecast — {slot}</b>")
     msg.append(f"Run: <code>{run_id}</code>")
     msg.append("")
-    e4_proba_cal = calibrate_proba_by_uncertainty(e4.proba_up, e4.interval, m4.last_price, m4.atr)
-    e12_proba_cal = calibrate_proba_by_uncertainty(e12.proba_up, e12.interval, m4.last_price, m4.atr)
-    msg.append(f"<b>4h</b>: ŷ={e4.y_hat:.2f} (p_up={e4_proba_cal:.2f} cal, interval=({e4.interval[0]:.2f}..{e4.interval[1]:.2f}))")
-    msg.append(f"<b>12h</b>: ŷ={e12.y_hat:.2f} (p_up={e12_proba_cal:.2f} cal, interval=({e12.interval[0]:.2f}..{e12.interval[1]:.2f}))")
+    e4_proba_cal = calibrate_proba_by_uncertainty(
+        e4.proba_up, e4.interval, m4.last_price, m4.atr
+    )
+    e12_proba_cal = calibrate_proba_by_uncertainty(
+        e12.proba_up, e12.interval, m4.last_price, m4.atr
+    )
+    msg.append(
+        f"<b>4h</b>: ŷ={e4.y_hat:.2f} (p_up={e4_proba_cal:.2f} cal, interval=({e4.interval[0]:.2f}..{e4.interval[1]:.2f}))"
+    )
+    msg.append(
+        f"<b>12h</b>: ŷ={e12.y_hat:.2f} (p_up={e12_proba_cal:.2f} cal, interval=({e12.interval[0]:.2f}..{e12.interval[1]:.2f}))"
+    )
     msg.append("")
-    msg.append(f"<b>Режим рынка</b>: {regime.label} (conf={regime.confidence:.2f}, vol≈{regime.features.get('vol_pct', 0):.2f}%)")
+    msg.append(
+        f"<b>Режим рынка</b>: {regime.label} (conf={regime.confidence:.2f}, vol≈{regime.features.get('vol_pct', 0):.2f}%)"
+    )
     if ob_meta:
-        msg.append(f"Orderbook: imbalance={ob_meta.get('imbalance', 0.0):+.2f} (bid_vol={ob_meta.get('bid_vol', 0.0):.0f}, ask_vol={ob_meta.get('ask_vol', 0.0):.0f})")
+        msg.append(
+            f"Orderbook: imbalance={ob_meta.get('imbalance', 0.0):+.2f} (bid_vol={ob_meta.get('bid_vol', 0.0):.0f}, ask_vol={ob_meta.get('ask_vol', 0.0):.0f})"
+        )
     if onchain_signals:
-        msg.append(f"On‑chain: {len(onchain_signals)} сигнал(ов); пример: {onchain_signals[0]['metric']}={onchain_signals[0]['value']}")
+        msg.append(
+            f"On‑chain: {len(onchain_signals)} сигнал(ов); пример: {onchain_signals[0]['metric']}={onchain_signals[0]['value']}"
+        )
     msg.append("<b>Почему так (кратко)</b>:\n" + expl_text)
     msg.append("")
     msg.append("<b>Арбитраж аргументов</b>:\n" + deb_text)
@@ -228,8 +310,8 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
     if news_n:
         msg.append("<b>Топ новости:</b>")
         for s in n_out.news_signals[:news_n]:
-            if getattr(s, 'url', None):
-                line = f"• [{s.sentiment} · {s.impact_score}] <a href=\"{s.url}\">{s.title}</a> ({s.source})"
+            if getattr(s, "url", None):
+                line = f'• [{s.sentiment} · {s.impact_score}] <a href="{s.url}">{s.title}</a> ({s.source})'
             else:
                 line = f"• [{s.sentiment} · {s.impact_score}] {s.title} ({s.source})"
             msg.append(line)
@@ -244,19 +326,25 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
         msg.append("")
     msg.append("<b>Сценарии (5 веток):</b>")
     for sc in scenarios:
-        msg.append(f"• {sc['if_level']}: {sc['then_path']} (p={sc['prob']:.2f}); inv: {sc['invalidation']}")
+        msg.append(
+            f"• {sc['if_level']}: {sc['then_path']} (p={sc['prob']:.2f}); inv: {sc['invalidation']}"
+        )
     msg.append("")
     if trade.get("side") == "NO-TRADE" or not ok:
-        msg.append("<b>Сделка</b>: NO-TRADE (" + (reason or 'policy') + ")")
+        msg.append("<b>Сделка</b>: NO-TRADE (" + (reason or "policy") + ")")
     else:
         msg.append(
             "<b>Сделка</b>: "
             f"{trade['side']} x{trade['leverage']} entry≈{trade['entry']['zone'][0]:.2f} SL={trade['stop_loss']:.2f} TP={trade['take_profit']:.2f} R:R={trade['rr_expected']:.2f}"
         )
     msg.append("")
-    msg.append(f"Артефакты: prices → {p_out.prices_path_s3.split('/', 2)[-1]}, features → {f_out.features_path_s3.split('/', 2)[-1]}, chart → {chart_s3.split('/', 2)[-1]}")
+    msg.append(
+        f"Артефакты: prices → {p_out.prices_path_s3.split('/', 2)[-1]}, features → {f_out.features_path_s3.split('/', 2)[-1]}, chart → {chart_s3.split('/', 2)[-1]}"
+    )
     msg.append("")
-    msg.append("<i>Отказ от ответственности: это не инвестсовет. Решения о сделках вы принимаете самостоятельно, учитывая риски.</i>")
+    msg.append(
+        "<i>Отказ от ответственности: это не инвестсовет. Решения о сделках вы принимаете самостоятельно, учитывая риски.</i>"
+    )
 
     # Publish chart then message
     with timed(durations, "publish"):
@@ -268,11 +356,47 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
 
     # Persist predictions and scenarios (best-effort)
     try:
-        per_model_4h = {p.model: {"y_hat": p.y_hat, "pi_low": p.pi_low, "pi_high": p.pi_high, "proba_up": p.proba_up, "cv": p.cv_metrics} for p in m4.preds}
-        per_model_12h = {p.model: {"y_hat": p.y_hat, "pi_low": p.pi_low, "pi_high": p.pi_high, "proba_up": p.proba_up, "cv": p.cv_metrics} for p in m12.preds}
-        upsert_prediction(run_id, "4h", e4.y_hat, e4.interval[0], e4.interval[1], e4.proba_up, per_model_4h)
-        upsert_prediction(run_id, "12h", e12.y_hat, e12.interval[0], e12.interval[1], e12.proba_up, per_model_12h)
-        upsert_ensemble_weights(run_id, e4.weights | {f"12h:{k}": v for k, v in e12.weights.items()})
+        per_model_4h = {
+            p.model: {
+                "y_hat": p.y_hat,
+                "pi_low": p.pi_low,
+                "pi_high": p.pi_high,
+                "proba_up": p.proba_up,
+                "cv": p.cv_metrics,
+            }
+            for p in m4.preds
+        }
+        per_model_12h = {
+            p.model: {
+                "y_hat": p.y_hat,
+                "pi_low": p.pi_low,
+                "pi_high": p.pi_high,
+                "proba_up": p.proba_up,
+                "cv": p.cv_metrics,
+            }
+            for p in m12.preds
+        }
+        upsert_prediction(
+            run_id,
+            "4h",
+            e4.y_hat,
+            e4.interval[0],
+            e4.interval[1],
+            e4.proba_up,
+            per_model_4h,
+        )
+        upsert_prediction(
+            run_id,
+            "12h",
+            e12.y_hat,
+            e12.interval[0],
+            e12.interval[1],
+            e12.proba_up,
+            per_model_12h,
+        )
+        upsert_ensemble_weights(
+            run_id, e4.weights | {f"12h:{k}": v for k, v in e12.weights.items()}
+        )
         upsert_scenarios(run_id, scenarios, chart_s3)
         # Save explanation/debate
         md = "<b>Почему так</b>\n" + expl_text + "\n\n<b>Арбитраж</b>\n" + deb_text
@@ -282,21 +406,37 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
         # Save release report to S3
         news_export = []
         for s in n_out.news_signals[:5]:
-            news_export.append({
-                "ts": getattr(s, "ts", None),
-                "title": getattr(s, "title", None),
-                "source": getattr(s, "source", None),
-                "sentiment": getattr(s, "sentiment", None),
-                "impact_score": getattr(s, "impact_score", None),
-                "url": getattr(s, "url", None),
-            })
+            news_export.append(
+                {
+                    "ts": getattr(s, "ts", None),
+                    "title": getattr(s, "title", None),
+                    "source": getattr(s, "source", None),
+                    "sentiment": getattr(s, "sentiment", None),
+                    "impact_score": getattr(s, "impact_score", None),
+                    "url": getattr(s, "url", None),
+                }
+            )
         _ = save_release_report(
             run_id=run_id,
             slot=slot,
-            regime={"label": regime.label, "confidence": regime.confidence, **regime.features},
+            regime={
+                "label": regime.label,
+                "confidence": regime.confidence,
+                **regime.features,
+            },
             neighbors=neighbors,
-            ensemble_4h={"y_hat": e4.y_hat, "proba_up": e4.proba_up, "interval": e4.interval, "weights": e4.weights},
-            ensemble_12h={"y_hat": e12.y_hat, "proba_up": e12.proba_up, "interval": e12.interval, "weights": e12.weights},
+            ensemble_4h={
+                "y_hat": e4.y_hat,
+                "proba_up": e4.proba_up,
+                "interval": e4.interval,
+                "weights": e4.weights,
+            },
+            ensemble_12h={
+                "y_hat": e12.y_hat,
+                "proba_up": e12.proba_up,
+                "interval": e12.interval,
+                "weights": e12.weights,
+            },
             per_model_4h=per_model_4h,
             per_model_12h=per_model_12h,
             scenarios=scenarios,
@@ -327,7 +467,9 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
                 if "da" in p.cv_metrics:
                     per_model_vals[f"da_12h_{p.model}"] = float(p.cv_metrics["da"])  # type: ignore[assignment]
         if per_model_vals:
-            push_values(job="predict_release", values=per_model_vals, labels={"slot": slot})
+            push_values(
+                job="predict_release", values=per_model_vals, labels={"slot": slot}
+            )
     except Exception:
         pass
     # business metrics
@@ -335,8 +477,14 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
         values = {
             "p_up_4h": float(e4.proba_up),
             "p_up_12h": float(e12.proba_up),
-            "p_up_4h_cal": float(calibrate_proba_by_uncertainty(e4.proba_up, e4.interval, m4.last_price, m4.atr)),
-            "interval_width_pct_4h": float((e4.interval[1] - e4.interval[0]) / max(1e-6, m4.last_price)),
+            "p_up_4h_cal": float(
+                calibrate_proba_by_uncertainty(
+                    e4.proba_up, e4.interval, m4.last_price, m4.atr
+                )
+            ),
+            "interval_width_pct_4h": float(
+                (e4.interval[1] - e4.interval[0]) / max(1e-6, m4.last_price)
+            ),
             "atr_pct": float(m4.atr / max(1e-6, m4.last_price)),
             "no_trade": 1.0 if (trade.get("side") == "NO-TRADE" or not ok) else 0.0,
             "rr_expected": float(trade.get("rr_expected") or 0.0),
@@ -344,10 +492,14 @@ def predict_release(slot: str = "manual", horizon_hours_4h: int = 4, horizon_hou
             "neighbors_k": float(len(neighbors)),
         }
         if ob_meta and isinstance(ob_meta.get("imbalance"), (int, float)):
-            values["ob_imbalance"] = float(ob_meta["imbalance"])  # type: ignore[index]
+            values["ob_imbalance"] = float(cast(float, ob_meta.get("imbalance", 0.0)))
         # avg news confidence if available
         try:
-            confs = [float(getattr(s, "confidence", None)) for s in n_out.news_signals if getattr(s, "confidence", None) is not None]
+            confs = []
+            for s in n_out.news_signals:
+                val = getattr(s, "confidence", None)
+                if val is not None:
+                    confs.append(float(val))
             if confs:
                 values["news_conf_avg"] = float(sum(confs) / len(confs))
         except Exception:
@@ -367,16 +519,22 @@ def main():
         now = datetime.now(timezone.utc)
         run_id = now.strftime("%Y%m%dT%H%M%SZ")
         try:
-            log_error(run_id, None, {"error": str(e)}, regime=None, features_digest=None)
+            log_error(
+                run_id, None, {"error": str(e)}, regime=None, features_digest=None
+            )
         except Exception:
             pass
         msg = []
         msg.append(f"<b>BTC Forecast — {slot}</b>")
         msg.append(f"Run: <code>{run_id}</code>")
         msg.append("")
-        msg.append("Технические неполадки — публикуем fallback без сделки. Следующий релиз по расписанию.")
+        msg.append(
+            "Технические неполадки — публикуем fallback без сделки. Следующий релиз по расписанию."
+        )
         msg.append("")
-        msg.append("<i>Отказ от ответственности: это не инвестсовет. Решения о сделках вы принимаете самостоятельно, учитывая риски.</i>")
+        msg.append(
+            "<i>Отказ от ответственности: это не инвестсовет. Решения о сделках вы принимаете самостоятельно, учитывая риски.</i>"
+        )
         publish_message("\n".join(msg))
 
 
