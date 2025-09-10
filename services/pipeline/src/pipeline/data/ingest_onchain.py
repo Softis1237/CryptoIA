@@ -67,7 +67,14 @@ def _fetch_metric(
 def run(payload: IngestOnchainInput) -> IngestOnchainOutput:
     api_key = os.getenv("GLASSNODE_API_KEY")
     if not api_key:
-        raise RuntimeError("GLASSNODE_API_KEY is not set")
+        logger.warning("GLASSNODE_API_KEY is not set; skipping on-chain ingestion")
+        return IngestOnchainOutput(
+            run_id=payload.run_id,
+            slot=payload.slot,
+            asset=payload.asset,
+            onchain_signals=[],
+            onchain_path_s3="",
+        )
 
     signals: List[OnchainSignal] = []
     for metric, endpoint in _METRIC_MAP.items():
@@ -84,15 +91,19 @@ def run(payload: IngestOnchainInput) -> IngestOnchainOutput:
                 )
             )
 
-    df = pd.DataFrame([s.model_dump() for s in signals])
-    table = pa.Table.from_pandas(df)
-    pq.write_table(table, "onchain.parquet", compression="zstd")
-    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    s3_path = f"runs/{date_key}/{payload.slot}/onchain.parquet"
-    sink = pa.BufferOutputStream()
-    pq.write_table(table, sink, compression="zstd")
-    buf = sink.getvalue().to_pybytes()
-    s3_uri = upload_bytes(s3_path, buf, content_type="application/octet-stream")
+    try:
+        df = pd.DataFrame([s.model_dump() for s in signals])
+        table = pa.Table.from_pandas(df)
+        pq.write_table(table, "onchain.parquet", compression="zstd")
+        date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s3_path = f"runs/{date_key}/{payload.slot}/onchain.parquet"
+        sink = pa.BufferOutputStream()
+        pq.write_table(table, sink, compression="zstd")
+        buf = sink.getvalue().to_pybytes()
+        s3_uri = upload_bytes(s3_path, buf, content_type="application/octet-stream")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Failed to persist on-chain signals: {exc}")
+        s3_uri = ""
 
     return IngestOnchainOutput(
         run_id=payload.run_id,
