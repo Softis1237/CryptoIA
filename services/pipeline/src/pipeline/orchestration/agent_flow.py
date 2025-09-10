@@ -1,8 +1,6 @@
-
 from __future__ import annotations
 
 # mypy: ignore-errors
-
 
 """Agent-based orchestration of the release flow (P1).
 
@@ -18,18 +16,12 @@ Env flags:
   USE_COORDINATOR=1  # make predict_release.py call into this flow
 """
 
-from __future__ import annotations
-
 import argparse
 import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-
-from typing import Any, Dict
-
 from typing import Any, Dict, Optional
-
 
 from loguru import logger
 
@@ -41,54 +33,14 @@ from ..data.ingest_onchain import IngestOnchainInput
 from ..data.ingest_onchain import run as run_onchain
 from ..data.ingest_orderbook import IngestOrderbookInput
 from ..data.ingest_orderbook import run as run_orderbook
-
-
-
-
-# Steps used from existing modules
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
-from ..infra.logging_config import init_logging
-from ..infra.metrics import push_durations, push_values, timed
-from ..infra.obs import init_sentry
-from ..infra.run_lock import acquire_release_lock
-
-
-# Steps used from existing modules
-from ..data.ingest_prices import IngestPricesInput
-from ..data.ingest_prices import run as run_prices
-from ..infra.logging_config import init_logging
-from ..infra.metrics import push_durations, push_values, timed
-from ..infra.obs import init_sentry
-from ..infra.run_lock import acquire_release_lock
-
-try:
-    from ..data.ingest_futures import IngestFuturesInput
-    from ..data.ingest_futures import run as run_futures
-except ImportError:  # pragma: no cover
-    IngestFuturesInput = None  # type: ignore[assignment]
-    run_futures = None  # type: ignore[assignment]
-try:
-    from ..data.ingest_social import IngestSocialInput
-    from ..data.ingest_social import run as run_social
-except ImportError:  # pragma: no cover
-    IngestSocialInput = None  # type: ignore[assignment]
-    run_social = None  # type: ignore[assignment]
 from ..data.ingest_prices_lowtf import IngestPricesLowTFInput
 from ..data.ingest_prices_lowtf import run as run_prices_lowtf
-
-try:
-    from ..data.ingest_altdata import IngestAltDataInput
-    from ..data.ingest_altdata import run as run_altdata
-except ImportError:  # pragma: no cover
-    IngestAltDataInput = None  # type: ignore[assignment]
-    run_altdata = None  # type: ignore[assignment]
 from ..ensemble.ensemble_rank import EnsembleInput
 from ..ensemble.ensemble_rank import run as run_ensemble
 from ..features.features_calc import FeaturesCalcInput
 from ..features.features_calc import run as run_features
-
-
 from ..infra.db import (
     fetch_model_trust_regime,
     fetch_predictions_for_cv,
@@ -106,19 +58,11 @@ from ..infra.db import (
     upsert_trade_suggestion,
     upsert_validation_report,
 )
-
-
-
-from ..infra.db import (fetch_model_trust_regime, fetch_predictions_for_cv,
-                        fetch_recent_predictions, insert_agent_metric,
-                        insert_backtest_result, upsert_agent_prediction,
-                        upsert_ensemble_weights, upsert_explanations,
-                        upsert_features_snapshot, upsert_prediction,
-                        upsert_regime, upsert_scenarios,
-                        upsert_similar_windows, upsert_trade_suggestion,
-                        upsert_validation_report)
-
-
+from ..infra.health import start_background as start_health_server
+from ..infra.logging_config import init_logging
+from ..infra.metrics import push_durations, push_values, timed
+from ..infra.obs import init_sentry
+from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
 from ..reasoning.debate_arbiter import debate
@@ -133,6 +77,25 @@ from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
 
+try:
+    from ..data.ingest_futures import IngestFuturesInput
+    from ..data.ingest_futures import run as run_futures
+except ImportError:  # pragma: no cover
+    IngestFuturesInput = None  # type: ignore[assignment]
+    run_futures = None  # type: ignore[assignment]
+try:
+    from ..data.ingest_social import IngestSocialInput
+    from ..data.ingest_social import run as run_social
+except ImportError:  # pragma: no cover
+    IngestSocialInput = None  # type: ignore[assignment]
+    run_social = None  # type: ignore[assignment]
+try:
+    from ..data.ingest_altdata import IngestAltDataInput
+    from ..data.ingest_altdata import run as run_altdata
+except ImportError:  # pragma: no cover
+    IngestAltDataInput = None  # type: ignore[assignment]
+    run_altdata = None  # type: ignore[assignment]
+
 # Lightweight agent wrappers -------------------------------------------------
 
 
@@ -145,6 +108,12 @@ def _fail(name: str, err: Exception) -> AgentResult:
 
 
 class PricesAgent:
+    """Ingest price data.
+
+    Payload: ``IngestPricesInput``.
+    Env flags: none.
+    """
+
     name = "prices"
     priority = 10
 
@@ -157,6 +126,12 @@ class PricesAgent:
 
 
 class NewsAgent:
+    """Fetch news articles.
+
+    Payload keys: run_id, slot, time_window_hours, query.
+    Env flags: none.
+    """
+
     name = "news"
     priority = 20
 
@@ -170,6 +145,12 @@ class NewsAgent:
 
 
 class OrderbookAgent:
+    """Collect order book snapshots.
+
+    Payload: ``IngestOrderbookInput``.
+    Env flag ``ENABLE_ORDERBOOK`` controls execution.
+    """
+
     name = "orderbook"
     priority = 25
 
@@ -184,6 +165,12 @@ class OrderbookAgent:
 
 
 class OnchainAgent:
+    """Process on-chain metrics.
+
+    Payload: ``IngestOnchainInput``.
+    Env flag ``ENABLE_ONCHAIN`` controls execution.
+    """
+
     name = "onchain"
     priority = 26
 
@@ -198,6 +185,12 @@ class OnchainAgent:
 
 
 class FuturesAgent:
+    """Load futures data if available.
+
+    Payload: ``IngestFuturesInput``.
+    Env flag ``ENABLE_FUTURES`` controls execution.
+    """
+
     name = "futures"
     priority = 27
 
@@ -214,6 +207,12 @@ class FuturesAgent:
 
 
 class SocialAgent:
+    """Pull social sentiment data.
+
+    Payload: ``IngestSocialInput``.
+    Env flag ``ENABLE_SOCIAL`` controls execution.
+    """
+
     name = "social"
     priority = 28
 
@@ -230,6 +229,12 @@ class SocialAgent:
 
 
 class DeepPricesAgent:
+    """Ingest low timeframe price data.
+
+    Payload: ``IngestPricesLowTFInput``.
+    Env flag ``ENABLE_DEEP_PRICE`` controls execution.
+    """
+
     name = "prices_lowtf"
     priority = 12
 
@@ -244,6 +249,12 @@ class DeepPricesAgent:
 
 
 class AltDataAgent:
+    """Fetch alternative datasets.
+
+    Payload: ``IngestAltDataInput``.
+    Env flag ``ENABLE_ALT_DATA`` controls execution.
+    """
+
     name = "alt_data"
     priority = 29
 
@@ -260,6 +271,12 @@ class AltDataAgent:
 
 
 class FeaturesAgent:
+    """Compute feature matrix.
+
+    Payload: ``FeaturesCalcInput``.
+    Env flags: none.
+    """
+
     name = "features"
     priority = 30
 
@@ -272,6 +289,12 @@ class FeaturesAgent:
 
 
 class RegimeAgent:
+    """Detect market regime.
+
+    Payload requires ``features_path_s3``.
+    Env flags: none.
+    """
+
     name = "regime"
     priority = 40
 
@@ -292,6 +315,12 @@ class RegimeAgent:
 
 
 class SimilarPastAgent:
+    """Find similar historical windows.
+
+    Payload: ``SimilarPastInput``.
+    Env flags: none.
+    """
+
     name = "similar_past"
     priority = 45
 
@@ -304,6 +333,12 @@ class SimilarPastAgent:
 
 
 class ModelsAgent:
+    """Run ML models for a given horizon.
+
+    Payload is passed to ``ModelsInput`` with ``horizon_minutes``.
+    Env flags: none.
+    """
+
     def __init__(self, name: str, horizon_minutes: int):
         self.name = name
         self.priority = 50 if horizon_minutes <= 240 else 51
@@ -320,6 +355,12 @@ class ModelsAgent:
 
 
 class EnsembleAgent:
+    """Combine model predictions via ranking.
+
+    Payload: ``EnsembleInput``.
+    Env flags: none.
+    """
+
     def __init__(self, name: str):
         self.name = name
         self.priority = 60
@@ -333,6 +374,12 @@ class EnsembleAgent:
 
 
 class ScenariosAgent:
+    """Generate hypothetical scenarios via LLM or fallback.
+
+    Payload forwarded to ``run_scenarios``.
+    Env flags: none.
+    """
+
     name = "scenarios"
     priority = 65
 
@@ -345,6 +392,12 @@ class ScenariosAgent:
 
 
 class PlotAgent:
+    """Produce price chart with levels.
+
+    Payload: parameters for ``plot_price_with_levels``.
+    Env flags: none.
+    """
+
     name = "chart"
     priority = 66
 
@@ -357,6 +410,12 @@ class PlotAgent:
 
 
 class TradeAgent:
+    """Recommend trade card and verify basic constraints.
+
+    Payload: ``TradeRecommendInput`` fields.
+    Env flags: none.
+    """
+
     name = "trade"
     priority = 70
 
@@ -408,6 +467,12 @@ class TradeAgent:
 
 
 class RiskPolicyAgent:
+    """Apply heuristic risk rules to a trade card.
+
+    Payload: card, risk metrics and liquidity info.
+    Env flags: ``RISK_LEVERAGE_CAP``, ``RISK_MIN_RR``, ``RISK_VAR95_WARN``.
+    """
+
     name = "risk_policy"
     priority = 74
 
@@ -462,6 +527,12 @@ class RiskPolicyAgent:
 
 
 class ValidationRouterAgent:
+    """Derive validation configuration based on regime and sentiment.
+
+    Payload: regime, sentiment_index, liquidity.
+    Env flags: none.
+    """
+
     name = "validation_router"
     priority = 71
 
@@ -503,6 +574,12 @@ class ValidationRouterAgent:
 
 
 class TradeValidatorAgent:
+    """Check trade card against router configuration.
+
+    Payload: card, last_price, atr, cfg.
+    Env flags: none.
+    """
+
     name = "trade_validator"
     priority = 72
 
@@ -566,6 +643,12 @@ class TradeValidatorAgent:
 
 
 class RegimeValidatorAgent:
+    """Validate model direction against regime and news signals.
+
+    Payload: regime, y_hat, last_price, news_signals.
+    Env flags: none.
+    """
+
     name = "regime_validator"
     priority = 72
 
@@ -607,6 +690,12 @@ class RegimeValidatorAgent:
 
 
 class LLMValidatorAgent:
+    """Use external LLM service to vet trade card.
+
+    Payload: card, scenarios, explanation.
+    Env flags: ``ENABLE_LLM_VALIDATOR``, ``FLOWISE_VALIDATE_URL``, ``FLOWISE_TIMEOUT_SEC``.
+    """
+
     name = "llm_validator"
     priority = 73
 
@@ -637,6 +726,12 @@ class LLMValidatorAgent:
 
 
 class RiskEstimatorAgent:
+    """Estimate VaR/ES and volatility from features.
+
+    Payload requires ``features_path_s3``.
+    Env flags: none.
+    """
+
     name = "risk_estimator"
     priority = 66
 
@@ -677,6 +772,12 @@ class RiskEstimatorAgent:
 
 
 class ModelsCVAgent:
+    """Compute CV metrics for recent model predictions.
+
+    Payload: horizons list.
+    Env flag ``CCXT_PROVIDER`` selects exchange for prices.
+    """
+
     name = "models_cv"
     priority = 20  # run early, independent
 
@@ -766,6 +867,12 @@ class ModelsCVAgent:
 
 
 class BacktestAgent:
+    """Run simple breakout backtest on features.
+
+    Payload requires ``features_path_s3``.
+    Env flags: none.
+    """
+
     name = "backtest_validator"
     priority = 21
 
@@ -818,6 +925,12 @@ class BacktestAgent:
 
 
 class SentimentQualityAgent:
+    """Assess reliability of news sentiment signals.
+
+    Payload: list of news signals.
+    Env flags: none.
+    """
+
     name = "sentiment_quality"
     priority = 27
 
@@ -854,6 +967,12 @@ class SentimentQualityAgent:
 
 
 class AnomalyAgent:
+    """Detect statistical anomalies in price returns.
+
+    Payload requires ``features_path_s3``.
+    Env flags: none.
+    """
+
     name = "anomaly_detection"
     priority = 46
 
@@ -880,6 +999,12 @@ class AnomalyAgent:
 
 
 class AnomalyMLAgent:
+    """Detect anomalies using isolation forest on features.
+
+    Payload requires ``features_path_s3``.
+    Env flags: none.
+    """
+
     name = "anomaly_ml"
     priority = 47
 
@@ -918,6 +1043,12 @@ class AnomalyMLAgent:
 
 
 class CrisisAgent:
+    """Estimate crisis risk from regime, order book and news.
+
+    Payload: regime, orderbook_meta and news_signals.
+    Env flags: none.
+    """
+
     name = "crisis_detection"
     priority = 67
 
@@ -957,6 +1088,12 @@ class CrisisAgent:
 
 
 class SentimentIndexAgent:
+    """Combine news and social sentiment into an index.
+
+    Payload: news_signals and social_signals.
+    Env flags: none.
+    """
+
     name = "sentiment_index"
     priority = 29
 
@@ -999,6 +1136,12 @@ class SentimentIndexAgent:
 
 
 class LiquidityAgent:
+    """Evaluate market liquidity from alt data.
+
+    Payload requires ``alt_path_s3``.
+    Env flags: ``LIQUIDITY_MIN_USD``, ``LIQUIDITY_MAX_SLIP_BPS``.
+    """
+
     name = "liquidity_analysis"
     priority = 68
 
@@ -1046,6 +1189,12 @@ class LiquidityAgent:
 
 
 class ContrarianAgent:
+    """Heuristic contrarian indicator from funding and sentiment.
+
+    Payload: futures_path_s3, sentiment_index, regime.
+    Env flags: none.
+    """
+
     name = "contrarian_signal"
     priority = 69
 
@@ -1102,6 +1251,12 @@ class ContrarianAgent:
 
 
 class MacroAgent:
+    """Flag days with important macroeconomic events.
+
+    Payload: news_signals.
+    Env flags: none.
+    """
+
     name = "macro_analyzer"
     priority = 29
 
@@ -1138,6 +1293,12 @@ class MacroAgent:
 
 
 class LLMForecastAgent:
+    """Call external LLM to forecast price movement.
+
+    Payload: news_top, regime, last_price, atr.
+    Env flags: ``ENABLE_LLM_FORECAST``, ``FLOWISE_FORECAST_URL``, ``FLOWISE_TIMEOUT_SEC``.
+    """
+
     name = "llm_forecast"
     priority = 55
 
@@ -1172,6 +1333,12 @@ class LLMForecastAgent:
 
 
 class BehaviorAgent:
+    """Analyze derivatives positioning behaviour.
+
+    Payload requires ``alt_path_s3``.
+    Env flags: none.
+    """
+
     name = "behavior_analyzer"
     priority = 68
 
@@ -1210,6 +1377,12 @@ class BehaviorAgent:
 
 
 class EventImpactAgent:
+    """Derive market impact hypotheses from news topics.
+
+    Payload: news_signals.
+    Env flags: none.
+    """
+
     name = "event_impact"
     priority = 69
 
@@ -1242,6 +1415,13 @@ class EventImpactAgent:
 
 
 class ModelTrustAgent:
+    """Suggest model weighting adjustments based on regime and news context.
+
+    Payload: preds_4h, preds_12h, regime, news_ctx.
+    Env flags: ``ENABLE_REGIME_WEIGHTING``, ``NEWS_SENSITIVE_MODELS``,
+    ``NEWS_CTX_K``, ``REGIME_ALPHA_DECAY_DAYS``.
+    """
+
     name = "model_trust"
     priority = 61
 
@@ -1863,40 +2043,22 @@ def run_release_flow(
 
             def _stack(preds, horizon):
                 try:
-
                     from ..ensemble.stacking import (
                         combine_with_weights,
                         suggest_weights,
                     )
 
-
-                    w, n = suggest_weights(horizon)
-                    if not w or n < 10:
-                        return None
-                    y, l, h, p = combine_with_weights(
-
-                    from ..ensemble.stacking import (combine_with_weights,
-                                                     suggest_weights)
-
-
                     w, n = suggest_weights(horizon)
                     if not w or n < 10:
                         return None
                     y, low, high, prob = combine_with_weights(
-
                         [p.model_dump() for p in preds], w
                     )
                     return {
                         "y_hat": y,
-
-                        "pi_low": l,
-                        "pi_high": h,
-                        "proba_up": p,
-
                         "pi_low": low,
                         "pi_high": high,
                         "proba_up": prob,
-
                         "weights": w,
                         "samples": n,
                     }
@@ -2272,14 +2434,6 @@ def run_release_flow(
             publish_message,
             publish_photo_from_s3,
         )
-
-
-
-        from ..trading.publish_telegram import (publish_code_block_json,
-                                                publish_message,
-                                                publish_photo_from_s3)
-
-
         from ..utils.calibration import calibrate_proba_by_uncertainty
 
         msg = []
@@ -2391,15 +2545,9 @@ def run_release_flow(
             publish_message("\n".join(msg))
             publish_code_block_json("Карточка сделки (JSON)", card)
         except Exception:
-
             logger.exception("Failed to publish forecast message")
     except Exception:
         logger.exception("Failed to prepare forecast message")
-
-            logger.exception("Failed to publish Telegram message")
-    except Exception:
-        logger.exception("Failed to prepare message")
-
 
     # Persist predictions/scenarios/explanations best-effort
     try:
@@ -2489,7 +2637,6 @@ def run_release_flow(
         logger.exception("Failed to persist explanation or trade suggestion")
 
         logger.exception("Failed to persist explanations or trade suggestion")
-
 
     # metrics
     push_durations(job="release_flow", durations=durations, labels={"slot": ctx.slot})
@@ -2608,6 +2755,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--slot", default=os.environ.get("SLOT", "manual"))
     args = parser.parse_args()
+    start_health_server()
     try:
         run_release_flow(slot=args.slot)
     except Exception as e:  # noqa: BLE001

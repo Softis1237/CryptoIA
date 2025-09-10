@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import os
 import time
-from loguru import logger
-from ..infra.logging_config import init_logging
 
-from .agent_flow import run_release_flow
-from ..ops.cv_metrics_push import run as push_cv_metrics
-from ..ops.retrain import maybe_run as maybe_retrain
-from ..ops.feedback_metrics import collect_outcomes, update_regime_alphas
+from loguru import logger
+
 from ..infra.db import get_conn
+from ..infra.health import start_background as start_health_server
+from ..infra.logging_config import init_logging
+from ..ops.cv_metrics_push import run as push_cv_metrics
+from ..ops.feedback_metrics import collect_outcomes, update_regime_alphas
+from ..ops.retrain import maybe_run as maybe_retrain
+from .agent_flow import run_release_flow
 
 
 def main():
     init_logging()
+    start_health_server()
     slot = os.environ.get("SLOT", "scheduled")
     interval = int(os.environ.get("RUN_INTERVAL_SEC", "3600"))
     logger.info(f"Scheduled runner started: slot={slot} interval={interval}s")
@@ -41,6 +44,7 @@ def main():
                         row = cur.fetchone()
                         if row and row[0] is not None:
                             from datetime import datetime, timezone
+
                             last = row[0]
                             now = datetime.now(timezone.utc)
                             age_h = (now - last).total_seconds() / 3600.0
