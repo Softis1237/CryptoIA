@@ -78,8 +78,15 @@ def _get_news_sentiments_llm(
             "FLOWISE_SENTIMENT_URL", {"system": system_prompt, "user": user_prompt}
         )
 
-        if not results or not isinstance(results, list):
+        if (
+            not results
+            or isinstance(results, dict)
+            and results.get("status") == "error"
+        ):
             logger.warning("Flowise sentiment call returned no valid data.")
+            return {}
+        if not isinstance(results, list):
+            logger.warning("Flowise sentiment call returned unexpected format.")
             return {}
 
         # The result should be a list of dicts. We map it back to the original news items by URL.

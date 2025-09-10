@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
-from loguru import logger
-
-from .llm import call_openai_json, call_flowise_json
+from .llm import call_flowise_json, call_openai_json
 from .schemas import DebateResponse
 
 
@@ -18,7 +16,7 @@ def debate(
 ) -> tuple[str, List[str]]:
     sys = (
         "Ты арбитр: сведи аргументы в 3–6 пунктов (grounded-only).\n"
-        "Верни JSON строго {\"bullets\":[string,...],\"risk_flags\":[string,...]} без лишних полей.\n"
+        'Верни JSON строго {"bullets":[string,...],"risk_flags":[string,...]} без лишних полей.\n'
         "Основывайся только на аргументах моделей, режиме, топ‑новостях и похожих окнах; не придумывай чисел.\n"
         "Если есть память прошлых релизов — учитывай её как контекст; если есть веса доверия к агентам — учитывай их при приоритизации аргументов."
     )
@@ -30,10 +28,12 @@ def debate(
         f"Память: {memory or []}\n"
         f"Доверие: {trust or {}}"
     )
-    raw = call_flowise_json("FLOWISE_DEBATE_URL", {"system": sys, "user": usr}) or call_openai_json(sys, usr)
+    raw = call_flowise_json("FLOWISE_DEBATE_URL", {"system": sys, "user": usr})
+    if not raw or raw.get("status") == "error":
+        raw = call_openai_json(sys, usr)
     data = None
     try:
-        if raw:
+        if raw and raw.get("status") != "error":
             data = DebateResponse.model_validate(raw)
     except Exception:
         data = None
