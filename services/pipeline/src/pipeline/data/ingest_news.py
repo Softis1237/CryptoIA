@@ -33,12 +33,8 @@ class IngestNewsInput(BaseModel):
     time_window_hours: int = 12
     query: str = "crypto OR bitcoin"
 
-
-
     news_signals: List[dict] = Field(default_factory=list)
     news_facts: Optional[List[dict]] = None
-
-
 
 
 class IngestNewsOutput(BaseModel):
@@ -49,7 +45,9 @@ class IngestNewsOutput(BaseModel):
     news_path_s3: str
 
 
-def _get_news_sentiments_llm(news_items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _get_news_sentiments_llm(
+    news_items: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
     """
     Process a batch of news items through a Flowise graph for sentiment, impact, and topics.
     Returns a dictionary mapping URL to its processed data.
@@ -63,7 +61,9 @@ def _get_news_sentiments_llm(news_items: List[Dict[str, Any]]) -> Dict[str, Dict
     logger.info(f"Processing {len(news_items)} news items for sentiment with LLM...")
     try:
         # Prepare a compact representation for the prompt
-        compact_news = [{"url": item["url"], "title": item["title"][:250]} for item in news_items]
+        compact_news = [
+            {"url": item["url"], "title": item["title"][:250]} for item in news_items
+        ]
 
         system_prompt = (
             "You are a financial news analyst for the crypto market."
@@ -74,7 +74,9 @@ def _get_news_sentiments_llm(news_items: List[Dict[str, Any]]) -> Dict[str, Dict
         user_prompt = f"Analyze these news headlines:\n{compact_news}"
 
         # Call the specific Flowise endpoint for sentiment analysis
-        results = call_flowise_json("FLOWISE_SENTIMENT_URL", {"system": system_prompt, "user": user_prompt})
+        results = call_flowise_json(
+            "FLOWISE_SENTIMENT_URL", {"system": system_prompt, "user": user_prompt}
+        )
 
         if not results or not isinstance(results, list):
             logger.warning("Flowise sentiment call returned no valid data.")
@@ -87,7 +89,9 @@ def _get_news_sentiments_llm(news_items: List[Dict[str, Any]]) -> Dict[str, Dict
             for i, item in enumerate(news_items):
                 processed_data[item["url"]] = results[i]
         else:
-            logger.warning(f"Mismatch between input ({len(news_items)}) and output ({len(results)}) from sentiment LLM.")
+            logger.warning(
+                f"Mismatch between input ({len(news_items)}) and output ({len(results)}) from sentiment LLM."
+            )
 
         return processed_data
 
@@ -188,7 +192,12 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             title = r.get("title", "").lower()
             if "bull" in title or "up" in title or "pump" in title:
                 sentiment = "positive"
-            elif "bear" in title or "down" in title or "hack" in title or "exploit" in title:
+            elif (
+                "bear" in title
+                or "down" in title
+                or "hack" in title
+                or "exploit" in title
+            ):
                 sentiment = "negative"
             else:
                 sentiment = "neutral"
@@ -198,7 +207,8 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
         ts_raw = r.get("ts")
         try:
             ts_int = int(pd.to_datetime(ts_raw, utc=True).timestamp())
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to parse news timestamp '{ts_raw}': {e}")
             ts_int = int(now.timestamp())
 
         signals.append(
