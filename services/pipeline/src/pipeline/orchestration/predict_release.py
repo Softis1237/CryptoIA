@@ -114,7 +114,8 @@ def predict_release(
                     IngestOnchainInput(run_id=run_id, slot=slot, asset="BTC")
                 )
                 onchain_signals = [s.model_dump() for s in oc_out.onchain_signals]
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"On-chain ingest failed: {exc}")
             onchain_signals = []
 
     # Features
