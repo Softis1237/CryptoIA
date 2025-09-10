@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from typing import Tuple
 
 from .healthcheck import run
@@ -29,6 +30,13 @@ class _Handler(BaseHTTPRequestHandler):
 def serve(host: str = "0.0.0.0", port: int = 8000) -> None:  # nosec B104
     """Start health check HTTP server."""
     HTTPServer((host, port), _Handler).serve_forever()
+
+
+def start_background(host: str = "0.0.0.0", port: int = 8000) -> Thread:  # nosec B104
+    """Run ``serve`` in a daemon thread and return it."""
+    thread = Thread(target=serve, kwargs={"host": host, "port": port}, daemon=True)
+    thread.start()
+    return thread
 
 
 def main() -> None:
