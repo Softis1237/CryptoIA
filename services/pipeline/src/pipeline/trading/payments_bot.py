@@ -31,6 +31,24 @@ PRIVATE_CHANNEL_ID = os.getenv(
 
 CRYPTO_PAYMENT_URL = os.getenv("CRYPTO_PAYMENT_URL", "")
 
+OWNER_ID = os.getenv("TELEGRAM_OWNER_ID")
+ADMIN_IDS = {
+    x.strip() for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip()
+}
+
+
+def _is_admin(user_id: int) -> bool:
+    sid = str(user_id)
+    if OWNER_ID and sid == OWNER_ID:
+        return True
+    return sid in ADMIN_IDS
+
+
+# Pricing/config (Stars)
+PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
+PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
+
+
 # Pricing/config (Stars)
 PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
@@ -318,6 +336,9 @@ async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
+    if not _is_admin(update.message.from_user.id):
+        await update.message.reply_text(_t(lang, "not_enough_rights"))
+        return
     if not context.args:
         await update.message.reply_text(_t(lang, "redeem_usage"))
         return
@@ -339,14 +360,20 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_t(lang, "redeem_fail"))
 
 
+async def refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    if not _is_admin(update.message.from_user.id):
+        await update.message.reply_text(_t(lang, "not_enough_rights"))
+        return
+    await update.message.reply_text("Refund not implemented")
+
+
 async def admin_sweep(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    owner = os.getenv("TELEGRAM_OWNER_ID")
-    if not owner or str(update.message.from_user.id) != owner:
-        lang = _user_lang(update, context)
+    lang = _user_lang(update, context)
+    if not _is_admin(update.message.from_user.id):
         await update.message.reply_text(_t(lang, "not_enough_rights"))
         return
     count = sweep_and_revoke_channel_access()
-    lang = _user_lang(update, context)
     await update.message.reply_text(_t(lang, "sweep_done", count=count))
 
 
@@ -407,6 +434,7 @@ def main():
     app.add_handler(CommandHandler("link", link))
     app.add_handler(CommandHandler("renew", renew))
     app.add_handler(CommandHandler("redeem", redeem))
+    app.add_handler(CommandHandler("refund", refund))
     app.add_handler(CommandHandler("admin_sweep", admin_sweep))
     app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler("lang", lang_cmd))

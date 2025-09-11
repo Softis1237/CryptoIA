@@ -82,6 +82,15 @@ NEWS_SENSITIVE_MODELS — список моделей, которым нель�
 
 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — токен бота и ID канала/чата для публикаций.
 
+
+TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
+
+MONTH_STARS, YEAR_STARS — стоимость подписки в Telegram Stars (например, 500 и 5000).
+
+CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалюте.
+CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
+
+TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
 
 PRICE_STARS_MONTH, PRICE_STARS_YEAR — стоимость месячной и годовой подписки в Telegram Stars (милли‑звёздах, например, 2500 и 25000 ≈ $25/$250).
