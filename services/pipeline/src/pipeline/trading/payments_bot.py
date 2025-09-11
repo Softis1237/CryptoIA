@@ -18,6 +18,18 @@ from ..infra.db import add_subscription, get_subscription_status
 from .subscriptions import sweep_and_revoke_channel_access
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+PRIVATE_CHANNEL_ID = os.getenv(
+    "TELEGRAM_PRIVATE_CHANNEL_ID"
+)  # e.g. -100123456789 or @channel
+
+
+# Pricing/config
+MONTH_STARS = int(os.getenv("MONTH_STARS", "500"))
+YEAR_STARS = int(os.getenv("YEAR_STARS", "5000"))
+CRYPTO_PAYMENT_LINK = os.getenv("CRYPTO_PAYMENT_LINK")
+PAYLOAD = "subscription_1m"
+
 PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN", "")
 PRIVATE_CHANNEL_ID = os.getenv(
     "TELEGRAM_PRIVATE_CHANNEL_ID"
@@ -30,6 +42,7 @@ PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
 
 
+
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
     "ru": {
@@ -38,7 +51,6 @@ I18N = {
             "О проекте: ежедневные релизы 00:00/12:00, прогнозы 4h/12h, "
             "новости и карточка сделки в приватном канале."
         ),
-        "buy_not_configured": "Платёжный провайдер не настроен. Обратитесь к админу.",
         "invoice_title": "Подписка BTC Forecast",
         "invoice_desc_month": "Месячная подписка на закрытый канал с прогнозами 2 раза в день",
         "invoice_desc_year": "Годовая подписка на закрытый канал с прогнозами 2 раза в день",
@@ -56,6 +68,10 @@ I18N = {
         "invite_fail": "Не удалось выдать инвайт автоматически, свяжитесь с администратором.",
         "not_enough_rights": "Недостаточно прав.",
         "sweep_done": "Готово. Истекших подписок: {count}",
+
+        "crypto_link": "Или оплатите криптовалютой:",
+        "crypto_pay": "Оплатить криптой",
+
         "start_menu_lang": "Выбор языка",
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
@@ -69,6 +85,7 @@ I18N = {
         "redeem_usage": "Использование: /redeem <код>",
         "redeem_ok": "Код принят, подписка активирована.",
         "redeem_fail": "Неверный код.",
+
     },
     "en": {
         "start": "Hi! Choose an option:",
@@ -76,7 +93,6 @@ I18N = {
             "About: daily releases at 00:00/12:00 with 4h/12h forecasts, "
             "news and a trade card in a private channel."
         ),
-        "buy_not_configured": "Payment provider is not configured. Please contact admin.",
         "invoice_title": "BTC Forecast Subscription",
         "invoice_desc_month": "Monthly access to a private channel with 2 posts/day",
         "invoice_desc_year": "Yearly access to a private channel with 2 posts/day",
@@ -94,6 +110,10 @@ I18N = {
         "invite_fail": "Failed to create invite link automatically, please contact admin.",
         "not_enough_rights": "Not enough rights.",
         "sweep_done": "Done. Expired subscriptions: {count}",
+
+        "crypto_link": "Or pay with crypto:",
+        "crypto_pay": "Pay with crypto",
+
         "start_menu_lang": "Language",
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
@@ -125,8 +145,13 @@ def _set_user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str
         pass
 
 
+
+def _t(language: str, key: str, **kwargs) -> str:
+    return (I18N.get(language, I18N["ru"]).get(key, key)).format(**kwargs)
+
 def _t(lang_code: str, key: str, **kwargs) -> str:
     return (I18N.get(lang_code, I18N["ru"]).get(key, key)).format(**kwargs)
+
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,6 +172,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
+
+    prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
+    await update.message.reply_invoice(
+        title=_t(lang, "invoice_title"),
+        description=_t(lang, "invoice_desc"),
+        payload=PAYLOAD,
+        currency="XTR",
+        prices=prices,
+        need_name=False,
+        need_email=False,
+
     kb = [
         [
             InlineKeyboardButton(_t(lang, "plan_month"), callback_data="plan:1"),
@@ -186,7 +222,13 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await q.edit_message_text(
         _t(lang, "choose_method"), reply_markup=InlineKeyboardMarkup(kb)
+
     )
+    if CRYPTO_PAYMENT_LINK:
+        btn = InlineKeyboardButton(_t(lang, "crypto_pay"), url=CRYPTO_PAYMENT_LINK)
+        await update.message.reply_text(
+            _t(lang, "crypto_link"), reply_markup=InlineKeyboardMarkup([[btn]])
+        )
 
 
 async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,7 +289,11 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
+
+            user.id, provider="telegram_payments", months=1, payload=payload
+
             user.id, provider="telegram_stars", months=months, payload=payload
+
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
