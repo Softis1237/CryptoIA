@@ -641,6 +641,45 @@ def sweep_expired_subscriptions(now=None) -> int:
     return count
 
 
+def ensure_payments_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS payments (\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
+        "  user_id BIGINT NOT NULL,\n"
+        "  charge_id TEXT UNIQUE NOT NULL,\n"
+        "  status TEXT NOT NULL,\n"
+        "  payload JSONB,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def mark_payment_refunded(charge_id: str) -> int | None:
+    """Mark payment refunded and return user_id if found."""
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE payments SET status='refunded' WHERE charge_id=%s RETURNING user_id",
+                (charge_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+
+
+def mark_subscription_refunded(user_id: int) -> None:
+    ensure_subscriptions_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE subscriptions SET status='refunded' WHERE user_id=%s",
+                (user_id,),
+            )
+
+
 def insert_user_feedback(
     user_id: int,
     run_id: str,

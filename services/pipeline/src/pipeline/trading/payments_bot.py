@@ -14,7 +14,12 @@ from telegram.ext import (
     filters,
 )
 
-from ..infra.db import add_subscription, get_subscription_status
+from ..infra.db import (
+    add_subscription,
+    get_subscription_status,
+    mark_payment_refunded,
+    mark_subscription_refunded,
+)
 from .subscriptions import sweep_and_revoke_channel_access
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -42,7 +47,6 @@ PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
 
 
-
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
     "ru": {
@@ -68,10 +72,8 @@ I18N = {
         "invite_fail": "Не удалось выдать инвайт автоматически, свяжитесь с администратором.",
         "not_enough_rights": "Недостаточно прав.",
         "sweep_done": "Готово. Истекших подписок: {count}",
-
         "crypto_link": "Или оплатите криптовалютой:",
         "crypto_pay": "Оплатить криптой",
-
         "start_menu_lang": "Выбор языка",
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
@@ -85,7 +87,6 @@ I18N = {
         "redeem_usage": "Использование: /redeem <код>",
         "redeem_ok": "Код принят, подписка активирована.",
         "redeem_fail": "Неверный код.",
-
     },
     "en": {
         "start": "Hi! Choose an option:",
@@ -110,10 +111,8 @@ I18N = {
         "invite_fail": "Failed to create invite link automatically, please contact admin.",
         "not_enough_rights": "Not enough rights.",
         "sweep_done": "Done. Expired subscriptions: {count}",
-
         "crypto_link": "Or pay with crypto:",
         "crypto_pay": "Pay with crypto",
-
         "start_menu_lang": "Language",
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
@@ -145,13 +144,8 @@ def _set_user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str
         pass
 
 
-
-def _t(language: str, key: str, **kwargs) -> str:
-    return (I18N.get(language, I18N["ru"]).get(key, key)).format(**kwargs)
-
 def _t(lang_code: str, key: str, **kwargs) -> str:
     return (I18N.get(lang_code, I18N["ru"]).get(key, key)).format(**kwargs)
-
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,17 +166,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
-
-    prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
-    await update.message.reply_invoice(
-        title=_t(lang, "invoice_title"),
-        description=_t(lang, "invoice_desc"),
-        payload=PAYLOAD,
-        currency="XTR",
-        prices=prices,
-        need_name=False,
-        need_email=False,
-
     kb = [
         [
             InlineKeyboardButton(_t(lang, "plan_month"), callback_data="plan:1"),
@@ -222,7 +205,6 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await q.edit_message_text(
         _t(lang, "choose_method"), reply_markup=InlineKeyboardMarkup(kb)
-
     )
     if CRYPTO_PAYMENT_LINK:
         btn = InlineKeyboardButton(_t(lang, "crypto_pay"), url=CRYPTO_PAYMENT_LINK)
@@ -289,11 +271,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
-
-            user.id, provider="telegram_payments", months=1, payload=payload
-
             user.id, provider="telegram_stars", months=months, payload=payload
-
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
@@ -361,6 +339,37 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(_t(lang, "redeem_fail"))
     else:
         await update.message.reply_text(_t(lang, "redeem_fail"))
+
+
+async def refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner = os.getenv("TELEGRAM_OWNER_ID")
+    lang = _user_lang(update, context)
+    if not owner or str(update.message.from_user.id) != owner:
+        await update.message.reply_text(_t(lang, "not_enough_rights"))
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /refund <charge_id>")
+        return
+    charge_id = context.args[0]
+    try:
+        user_id = mark_payment_refunded(charge_id)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"refund db error: {e}")
+        await update.message.reply_text("DB error")
+        return
+    if not user_id:
+        await update.message.reply_text(f"Payment not found: {charge_id}")
+        return
+    try:
+        await context.bot.refund_star_payment(
+            user_id=user_id, telegram_payment_charge_id=charge_id
+        )
+        mark_subscription_refunded(user_id)
+        logger.info(f"Refunded charge {charge_id} for user {user_id}")
+        await update.message.reply_text("Refunded")
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"refund api error: {e}")
+        await update.message.reply_text("Refund failed")
 
 
 async def admin_sweep(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -431,6 +440,7 @@ def main():
     app.add_handler(CommandHandler("link", link))
     app.add_handler(CommandHandler("renew", renew))
     app.add_handler(CommandHandler("redeem", redeem))
+    app.add_handler(CommandHandler("refund", refund))
     app.add_handler(CommandHandler("admin_sweep", admin_sweep))
     app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler("lang", lang_cmd))
