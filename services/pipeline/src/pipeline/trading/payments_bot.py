@@ -5,6 +5,7 @@ import os
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -42,7 +43,6 @@ PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
 
 
-
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
     "ru": {
@@ -68,10 +68,8 @@ I18N = {
         "invite_fail": "Не удалось выдать инвайт автоматически, свяжитесь с администратором.",
         "not_enough_rights": "Недостаточно прав.",
         "sweep_done": "Готово. Истекших подписок: {count}",
-
         "crypto_link": "Или оплатите криптовалютой:",
         "crypto_pay": "Оплатить криптой",
-
         "start_menu_lang": "Выбор языка",
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
@@ -85,7 +83,14 @@ I18N = {
         "redeem_usage": "Использование: /redeem <код>",
         "redeem_ok": "Код принят, подписка активирована.",
         "redeem_fail": "Неверный код.",
-
+        "help": (
+            "Доступные команды:\n"
+            "/buy — оплата подписки\n"
+            "/status — статус подписки\n"
+            "/renew — продление\n"
+            "/redeem <код> — промокод\n"
+            "/help — эта справка"
+        ),
     },
     "en": {
         "start": "Hi! Choose an option:",
@@ -110,10 +115,8 @@ I18N = {
         "invite_fail": "Failed to create invite link automatically, please contact admin.",
         "not_enough_rights": "Not enough rights.",
         "sweep_done": "Done. Expired subscriptions: {count}",
-
         "crypto_link": "Or pay with crypto:",
         "crypto_pay": "Pay with crypto",
-
         "start_menu_lang": "Language",
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
@@ -127,6 +130,14 @@ I18N = {
         "redeem_usage": "Usage: /redeem <code>",
         "redeem_ok": "Code redeemed, subscription activated.",
         "redeem_fail": "Invalid code.",
+        "help": (
+            "Commands:\n"
+            "/buy - buy subscription\n"
+            "/status - subscription status\n"
+            "/renew - renew subscription\n"
+            "/redeem <code> - redeem promo\n"
+            "/help - show this help"
+        ),
     },
 }
 
@@ -145,13 +156,8 @@ def _set_user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str
         pass
 
 
-
-def _t(language: str, key: str, **kwargs) -> str:
-    return (I18N.get(language, I18N["ru"]).get(key, key)).format(**kwargs)
-
 def _t(lang_code: str, key: str, **kwargs) -> str:
     return (I18N.get(lang_code, I18N["ru"]).get(key, key)).format(**kwargs)
-
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,6 +188,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices=prices,
         need_name=False,
         need_email=False,
+    )
 
     kb = [
         [
@@ -222,7 +229,6 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await q.edit_message_text(
         _t(lang, "choose_method"), reply_markup=InlineKeyboardMarkup(kb)
-
     )
     if CRYPTO_PAYMENT_LINK:
         btn = InlineKeyboardButton(_t(lang, "crypto_pay"), url=CRYPTO_PAYMENT_LINK)
@@ -289,11 +295,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
-
-            user.id, provider="telegram_payments", months=1, payload=payload
-
             user.id, provider="telegram_stars", months=months, payload=payload
-
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
@@ -406,6 +408,11 @@ async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(text)
 
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    await update.message.reply_text(_t(lang, "help"))
+
+
 async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -420,10 +427,31 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await about(update, context)
 
 
+async def post_init(app: Application) -> None:
+    commands_en = [
+        ("start", "start menu"),
+        ("buy", "buy subscription"),
+        ("status", "subscription status"),
+        ("renew", "renew subscription"),
+        ("redeem", "redeem code"),
+        ("help", "show help"),
+    ]
+    commands_ru = [
+        ("start", "стартовое меню"),
+        ("buy", "оплата подписки"),
+        ("status", "статус подписки"),
+        ("renew", "продление"),
+        ("redeem", "активация кода"),
+        ("help", "подсказка"),
+    ]
+    await app.bot.set_my_commands(commands_en, language_code="en")
+    await app.bot.set_my_commands(commands_ru, language_code="ru")
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
@@ -431,6 +459,7 @@ def main():
     app.add_handler(CommandHandler("link", link))
     app.add_handler(CommandHandler("renew", renew))
     app.add_handler(CommandHandler("redeem", redeem))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("admin_sweep", admin_sweep))
     app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler("lang", lang_cmd))
