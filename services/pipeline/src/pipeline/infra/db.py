@@ -639,6 +639,32 @@ def add_subscription(user_id: int, provider: str, months: int, payload: dict) ->
             )
 
 
+def create_redeem_code(months: int, invoice_id: str) -> str:
+    """Generate and store a one-time redeem code for a given invoice."""
+    import secrets
+
+    code = secrets.token_urlsafe(8)
+    sql = "INSERT INTO redeem_codes (code, months, invoice_id) VALUES (%s, %s, %s)"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code, months, invoice_id))
+    return code
+
+
+def redeem_code_use(code: str) -> int | None:
+    """Mark redeem code as used and return months granted."""
+    sql = (
+        "UPDATE redeem_codes SET used_at=now() WHERE code=%s AND used_at IS NULL RETURNING months"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return int(row[0])
+
+
 def get_subscription_status(user_id: int) -> tuple[str, Optional[str]]:
     ensure_subscriptions_tables()
     with get_conn() as conn:

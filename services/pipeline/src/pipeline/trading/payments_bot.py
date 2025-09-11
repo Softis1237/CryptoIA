@@ -14,6 +14,12 @@ from telegram.ext import (
     filters,
 )
 
+
+import requests
+
+from ..infra.db import add_subscription, get_subscription_status
+from .subscriptions import redeem_code_and_activate, sweep_and_revoke_channel_access
+
 from ..infra.db import (
     add_subscription,
     get_subscription_status,
@@ -22,12 +28,22 @@ from ..infra.db import (
 )
 from .subscriptions import sweep_and_revoke_channel_access
 
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 PRIVATE_CHANNEL_ID = os.getenv(
     "TELEGRAM_PRIVATE_CHANNEL_ID"
 )  # e.g. -100123456789 or @channel
 
+
+
+# Pricing/config
+MONTH_STARS = int(os.getenv("MONTH_STARS", "500"))
+YEAR_STARS = int(os.getenv("YEAR_STARS", "5000"))
+PAYLOAD = "subscription_1m"
+
+PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN", "")
+CRYPTO_PAY_API_URL = os.getenv("CRYPTO_PAY_API_URL", "")
 
 CRYPTO_PAYMENT_URL = os.getenv("CRYPTO_PAYMENT_URL", "")
 
@@ -250,8 +266,26 @@ async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             need_email=False,
         )
     else:
-        link = CRYPTO_PAYMENT_URL or "https://example.com/pay"
-        await q.message.reply_text(_t(lang, "payment_link", link=link))
+        if not CRYPTO_PAY_API_URL:
+            await q.message.reply_text(
+                _t(lang, "payment_link", link="https://example.com/pay")
+            )
+            return
+        try:
+            resp = requests.post(
+                f"{CRYPTO_PAY_API_URL.rstrip('/')}/invoice",
+                json={"plan": months_i, "telegram_id": q.from_user.id},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            link = data.get("address", "")
+            await q.message.reply_text(_t(lang, "payment_link", link=link))
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Invoice request failed: {e}")
+            await q.message.reply_text(
+                _t(lang, "payment_link", link="https://example.com/pay")
+            )
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +320,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
+
+            user.id,
+            provider="telegram_stars",
+            months=months,
+            payload=payload,
+
             user.id, provider="telegram_stars", months=months, payload=payload
+
         )
         insert_payment(charge_id, user.id, sp.total_amount)
     except Exception as e:  # noqa: BLE001
@@ -343,19 +384,9 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_t(lang, "redeem_usage"))
         return
     code = context.args[0]
-    valid = os.getenv("REDEEM_CODE")
-    if valid and code == valid:
-        try:
-            add_subscription(
-                update.message.from_user.id,
-                provider="redeem",
-                months=1,
-                payload={"code": code},
-            )
-            await update.message.reply_text(_t(lang, "redeem_ok"))
-        except Exception as e:  # noqa: BLE001
-            logger.exception(f"Redeem failed: {e}")
-            await update.message.reply_text(_t(lang, "redeem_fail"))
+    ok = redeem_code_and_activate(update.message.from_user.id, code)
+    if ok:
+        await update.message.reply_text(_t(lang, "redeem_ok"))
     else:
         await update.message.reply_text(_t(lang, "redeem_fail"))
 

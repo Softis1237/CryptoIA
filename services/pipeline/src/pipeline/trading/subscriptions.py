@@ -6,7 +6,12 @@ from typing import List
 
 from loguru import logger
 
-from ..infra.db import get_conn, sweep_expired_subscriptions
+from ..infra.db import (
+    add_subscription,
+    get_conn,
+    redeem_code_use,
+    sweep_expired_subscriptions,
+)
 from .publish_telegram import publish_message_to
 
 
@@ -40,6 +45,24 @@ def sweep_and_revoke_channel_access() -> int:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Telegram revoke failed: {e}")
     return expired_count
+
+
+def redeem_code_and_activate(user_id: int, code: str) -> bool:
+    """Redeem a code and activate subscription for given user."""
+    try:
+        months = redeem_code_use(code)
+        if not months:
+            return False
+        add_subscription(
+            user_id,
+            provider="redeem_code",
+            months=months,
+            payload={"code": code},
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"Redeem failed: {e}")
+        return False
 
 
 def send_renew_reminders(hours_before: int = 24) -> int:
