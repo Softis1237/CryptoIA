@@ -12,3 +12,12 @@ schedules:
   - name: cleanup_old_runs
     flow: flows/cleanup_old_runs.py
     cron: "0 2 * * *"
+  - name: subscriptions_sweep_hourly
+    flow: flows/subscriptions_sweep.py
+    cron: "0 * * * *"
+  - name: subscriptions_remind_72h
+    flow: flows/subscriptions_remind_72.py
+    cron: "0 9,21 * * *"
+  - name: subscriptions_remind_24h
+    flow: flows/subscriptions_remind_24.py
+    cron: "30 9,21 * * *"
