@@ -14,16 +14,27 @@ from telegram.ext import (
     filters,
 )
 
+
 import requests
 
 from ..infra.db import add_subscription, get_subscription_status
 from .subscriptions import redeem_code_and_activate, sweep_and_revoke_channel_access
+
+from ..infra.db import (
+    add_subscription,
+    get_subscription_status,
+    insert_payment,
+    payment_exists,
+)
+from .subscriptions import sweep_and_revoke_channel_access
+
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 PRIVATE_CHANNEL_ID = os.getenv(
     "TELEGRAM_PRIVATE_CHANNEL_ID"
 )  # e.g. -100123456789 or @channel
+
 
 
 # Pricing/config
@@ -34,12 +45,12 @@ PAYLOAD = "subscription_1m"
 PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN", "")
 CRYPTO_PAY_API_URL = os.getenv("CRYPTO_PAY_API_URL", "")
 
+CRYPTO_PAYMENT_URL = os.getenv("CRYPTO_PAYMENT_URL", "")
+
 
 # Pricing/config (Stars)
-PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
-PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
-
-
+PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
+PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
 
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
@@ -50,10 +61,10 @@ I18N = {
             "новости и карточка сделки в приватном канале."
         ),
         "invoice_title": "Подписка BTC Forecast",
-        "invoice_desc_month": "Месячная подписка на закрытый канал с прогнозами 2 раза в день",
-        "invoice_desc_year": "Годовая подписка на закрытый канал с прогнозами 2 раза в день",
-        "invoice_item_month": "Подписка на месяц",
-        "invoice_item_year": "Подписка на год",
+        "invoice_desc_month": "Месячная подписка на закрытый канал с прогнозами 2 раза в день. Промо-цена $25 (обычно $50).",
+        "invoice_desc_year": "Годовая подписка на закрытый канал с прогнозами 2 раза в день за $250.",
+        "invoice_item_month": "Подписка на месяц — $25 промо (обычно $50)",
+        "invoice_item_year": "Подписка на год — $250",
         "payment_ok": "Оплата получена. Спасибо! Выдаю доступ в закрытый канал.",
         "no_active": "Нет активной подписки. Используйте /buy.",
         "status_active": "Статус: активна до {ends}",
@@ -66,16 +77,14 @@ I18N = {
         "invite_fail": "Не удалось выдать инвайт автоматически, свяжитесь с администратором.",
         "not_enough_rights": "Недостаточно прав.",
         "sweep_done": "Готово. Истекших подписок: {count}",
-
         "crypto_link": "Или оплатите криптовалютой:",
         "crypto_pay": "Оплатить криптой",
-
         "start_menu_lang": "Выбор языка",
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
         "choose_plan": "Выберите план:",
-        "plan_month": "Месяц",
-        "plan_year": "Год",
+        "plan_month": "Месяц $25 промо (вместо $50)",
+        "plan_year": "Год $250",
         "choose_method": "Выберите способ оплаты:",
         "method_stars": "Stars",
         "method_crypto": "Крипто-сайт",
@@ -83,7 +92,6 @@ I18N = {
         "redeem_usage": "Использование: /redeem <код>",
         "redeem_ok": "Код принят, подписка активирована.",
         "redeem_fail": "Неверный код.",
-
     },
     "en": {
         "start": "Hi! Choose an option:",
@@ -92,10 +100,10 @@ I18N = {
             "news and a trade card in a private channel."
         ),
         "invoice_title": "BTC Forecast Subscription",
-        "invoice_desc_month": "Monthly access to a private channel with 2 posts/day",
-        "invoice_desc_year": "Yearly access to a private channel with 2 posts/day",
-        "invoice_item_month": "Monthly subscription",
-        "invoice_item_year": "Yearly subscription",
+        "invoice_desc_month": "Monthly access to a private channel with 2 posts/day. Promo price $25 (normally $50).",
+        "invoice_desc_year": "Yearly access to a private channel with 2 posts/day for $250.",
+        "invoice_item_month": "Monthly subscription — $25 promo (was $50)",
+        "invoice_item_year": "Yearly subscription — $250",
         "payment_ok": "Payment received. Thank you! Granting channel access.",
         "no_active": "No active subscription. Use /buy.",
         "status_active": "Status: active until {ends}",
@@ -108,16 +116,14 @@ I18N = {
         "invite_fail": "Failed to create invite link automatically, please contact admin.",
         "not_enough_rights": "Not enough rights.",
         "sweep_done": "Done. Expired subscriptions: {count}",
-
         "crypto_link": "Or pay with crypto:",
         "crypto_pay": "Pay with crypto",
-
         "start_menu_lang": "Language",
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
         "choose_plan": "Choose a plan:",
-        "plan_month": "Month",
-        "plan_year": "Year",
+        "plan_month": "Month $25 promo (was $50)",
+        "plan_year": "Year $250",
         "choose_method": "Choose payment method:",
         "method_stars": "Stars",
         "method_crypto": "Crypto site",
@@ -143,13 +149,8 @@ def _set_user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str
         pass
 
 
-
-def _t(language: str, key: str, **kwargs) -> str:
-    return (I18N.get(language, I18N["ru"]).get(key, key)).format(**kwargs)
-
 def _t(lang_code: str, key: str, **kwargs) -> str:
     return (I18N.get(lang_code, I18N["ru"]).get(key, key)).format(**kwargs)
-
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,6 +172,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
 
+
     prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
     await update.message.reply_invoice(
         title=_t(lang, "invoice_title"),
@@ -181,6 +183,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         need_name=False,
         need_email=False,
     )
+
 
     kb = [
         [
@@ -236,14 +239,10 @@ async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = PRICE_STARS_MONTH if months_i == 1 else PRICE_STARS_YEAR
         label_key = "invoice_item_month" if months_i == 1 else "invoice_item_year"
         desc_key = "invoice_desc_month" if months_i == 1 else "invoice_desc_year"
-        if not PROVIDER_TOKEN:
-            await q.message.reply_text(_t(lang, "buy_not_configured"))
-            return
         await q.message.reply_invoice(
             title=_t(lang, "invoice_title"),
             description=_t(lang, desc_key),
             payload=f"sub_{months_i}m",
-            provider_token=PROVIDER_TOKEN,
             currency="XTR",
             prices=[LabeledPrice(label=_t(lang, label_key), amount=price)],
             need_name=False,
@@ -279,6 +278,11 @@ async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
+    sp = update.message.successful_payment
+    charge_id = sp.telegram_payment_charge_id
+    if payment_exists(charge_id):
+        logger.info(f"Duplicate payment {charge_id} from user {user.id}")
+        return
     logger.info(f"Payment successful from user {user.id}")
     lang = _user_lang(update, context)
     await update.message.reply_text(_t(lang, "payment_ok"))
@@ -294,17 +298,21 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.exception(f"Failed to create invite link: {e}")
             await update.message.reply_text(_t(lang, "invite_fail"))
 
-    # Save subscription in DB depending on payload
+    # Save subscription in DB and log payment
     try:
-        sp = update.message.successful_payment
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
+
             user.id,
             provider="telegram_stars",
             months=months,
             payload=payload,
+
+            user.id, provider="telegram_stars", months=months, payload=payload
+
         )
+        insert_payment(charge_id, user.id, sp.total_amount)
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
 
