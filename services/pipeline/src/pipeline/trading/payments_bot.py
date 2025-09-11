@@ -14,7 +14,12 @@ from telegram.ext import (
     filters,
 )
 
-from ..infra.db import add_subscription, get_subscription_status
+from ..infra.db import (
+    add_subscription,
+    get_subscription_status,
+    insert_payment,
+    payment_exists,
+)
 from .subscriptions import sweep_and_revoke_channel_access
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -29,7 +34,6 @@ CRYPTO_PAYMENT_URL = os.getenv("CRYPTO_PAYMENT_URL", "")
 # Pricing/config (Stars)
 PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
-
 
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
@@ -150,6 +154,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
+
+
+    prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
+    await update.message.reply_invoice(
+        title=_t(lang, "invoice_title"),
+        description=_t(lang, "invoice_desc"),
+        payload=PAYLOAD,
+        currency="XTR",
+        prices=prices,
+        need_name=False,
+        need_email=False,
+    )
+
+
     kb = [
         [
             InlineKeyboardButton(_t(lang, "plan_month"), callback_data="plan:1"),
@@ -225,6 +243,11 @@ async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
+    sp = update.message.successful_payment
+    charge_id = sp.telegram_payment_charge_id
+    if payment_exists(charge_id):
+        logger.info(f"Duplicate payment {charge_id} from user {user.id}")
+        return
     logger.info(f"Payment successful from user {user.id}")
     lang = _user_lang(update, context)
     await update.message.reply_text(_t(lang, "payment_ok"))
@@ -240,14 +263,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.exception(f"Failed to create invite link: {e}")
             await update.message.reply_text(_t(lang, "invite_fail"))
 
-    # Save subscription in DB depending on payload
+    # Save subscription in DB and log payment
     try:
-        sp = update.message.successful_payment
         months = 12 if sp.invoice_payload.endswith("12m") else 1
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
             user.id, provider="telegram_stars", months=months, payload=payload
         )
+        insert_payment(charge_id, user.id, sp.total_amount)
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
 

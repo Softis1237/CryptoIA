@@ -594,6 +594,38 @@ def ensure_subscriptions_tables() -> None:
             cur.execute(sql)
 
 
+def ensure_payments_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS payments (\n"
+        "  charge_id TEXT PRIMARY KEY,\n"
+        "  user_id BIGINT NOT NULL,\n"
+        "  amount BIGINT NOT NULL,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def payment_exists(charge_id: str) -> bool:
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM payments WHERE charge_id=%s", (charge_id,))
+            return cur.fetchone() is not None
+
+
+def insert_payment(charge_id: str, user_id: int, amount: int) -> None:
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO payments (charge_id, user_id, amount) VALUES (%s, %s, %s)",
+                (charge_id, user_id, amount),
+            )
+
+
 def add_subscription(user_id: int, provider: str, months: int, payload: dict) -> None:
     ensure_subscriptions_tables()
     now = datetime.now(timezone.utc)
