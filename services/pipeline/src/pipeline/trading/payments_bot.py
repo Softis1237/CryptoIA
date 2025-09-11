@@ -5,6 +5,7 @@ import os
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -65,6 +66,7 @@ PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
 
 
+
 # Pricing/config (Stars)
 PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
@@ -109,6 +111,16 @@ I18N = {
         "redeem_usage": "Использование: /redeem <код>",
         "redeem_ok": "Код принят, подписка активирована.",
         "redeem_fail": "Неверный код.",
+
+        "help": (
+            "Доступные команды:\n"
+            "/buy — оплата подписки\n"
+            "/status — статус подписки\n"
+            "/renew — продление\n"
+            "/redeem <код> — промокод\n"
+            "/help — эта справка"
+        ),
+
     },
     "en": {
         "start": "Hi! Choose an option:",
@@ -148,6 +160,14 @@ I18N = {
         "redeem_usage": "Usage: /redeem <code>",
         "redeem_ok": "Code redeemed, subscription activated.",
         "redeem_fail": "Invalid code.",
+        "help": (
+            "Commands:\n"
+            "/buy - buy subscription\n"
+            "/status - subscription status\n"
+            "/renew - renew subscription\n"
+            "/redeem <code> - redeem promo\n"
+            "/help - show this help"
+        ),
     },
 }
 
@@ -321,13 +341,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         payload = update.message.to_dict() if update and update.message else {}
         add_subscription(
 
+
             user.id,
             provider="telegram_stars",
             months=months,
             payload=payload,
 
-            user.id, provider="telegram_stars", months=months, payload=payload
 
+            user.id, provider="telegram_stars", months=months, payload=payload
         )
         insert_payment(charge_id, user.id, sp.total_amount)
     except Exception as e:  # noqa: BLE001
@@ -440,6 +461,11 @@ async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(text)
 
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    await update.message.reply_text(_t(lang, "help"))
+
+
 async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -454,10 +480,31 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await about(update, context)
 
 
+async def post_init(app: Application) -> None:
+    commands_en = [
+        ("start", "start menu"),
+        ("buy", "buy subscription"),
+        ("status", "subscription status"),
+        ("renew", "renew subscription"),
+        ("redeem", "redeem code"),
+        ("help", "show help"),
+    ]
+    commands_ru = [
+        ("start", "стартовое меню"),
+        ("buy", "оплата подписки"),
+        ("status", "статус подписки"),
+        ("renew", "продление"),
+        ("redeem", "активация кода"),
+        ("help", "подсказка"),
+    ]
+    await app.bot.set_my_commands(commands_en, language_code="en")
+    await app.bot.set_my_commands(commands_ru, language_code="ru")
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
@@ -465,7 +512,10 @@ def main():
     app.add_handler(CommandHandler("link", link))
     app.add_handler(CommandHandler("renew", renew))
     app.add_handler(CommandHandler("redeem", redeem))
+    app.add_handler(CommandHandler("help", help_cmd))
+
     app.add_handler(CommandHandler("refund", refund))
+
     app.add_handler(CommandHandler("admin_sweep", admin_sweep))
     app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler("lang", lang_cmd))
