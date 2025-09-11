@@ -594,6 +594,38 @@ def ensure_subscriptions_tables() -> None:
             cur.execute(sql)
 
 
+def ensure_payments_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS payments (\n"
+        "  charge_id TEXT PRIMARY KEY,\n"
+        "  user_id BIGINT NOT NULL,\n"
+        "  amount BIGINT NOT NULL,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def payment_exists(charge_id: str) -> bool:
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM payments WHERE charge_id=%s", (charge_id,))
+            return cur.fetchone() is not None
+
+
+def insert_payment(charge_id: str, user_id: int, amount: int) -> None:
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO payments (charge_id, user_id, amount) VALUES (%s, %s, %s)",
+                (charge_id, user_id, amount),
+            )
+
+
 def add_subscription(user_id: int, provider: str, months: int, payload: dict) -> None:
     ensure_subscriptions_tables()
     now = datetime.now(timezone.utc)
@@ -605,6 +637,32 @@ def add_subscription(user_id: int, provider: str, months: int, payload: dict) ->
                 "ON CONFLICT (user_id, status) DO UPDATE SET ends_at=GREATEST(subscriptions.ends_at, EXCLUDED.ends_at), payload=EXCLUDED.payload",
                 (user_id, provider, now, ends, Json(payload)),
             )
+
+
+def create_redeem_code(months: int, invoice_id: str) -> str:
+    """Generate and store a one-time redeem code for a given invoice."""
+    import secrets
+
+    code = secrets.token_urlsafe(8)
+    sql = "INSERT INTO redeem_codes (code, months, invoice_id) VALUES (%s, %s, %s)"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code, months, invoice_id))
+    return code
+
+
+def redeem_code_use(code: str) -> int | None:
+    """Mark redeem code as used and return months granted."""
+    sql = (
+        "UPDATE redeem_codes SET used_at=now() WHERE code=%s AND used_at IS NULL RETURNING months"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return int(row[0])
 
 
 def get_subscription_status(user_id: int) -> tuple[str, Optional[str]]:
