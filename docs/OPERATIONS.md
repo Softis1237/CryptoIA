@@ -31,6 +31,12 @@ docker compose run --rm pipeline python -m pipeline.orchestration.agent_flow --s
 psql $POSTGRES_DSN -f migrations/001_init.sql
 psql $POSTGRES_DSN -f migrations/002_pgvector.sql
 ...
+psql $POSTGRES_DSN -f migrations/011_subscriptions_redeem.sql
+psql $POSTGRES_DSN -f migrations/012_model_registry.sql
+psql $POSTGRES_DSN -f migrations/013_users.sql
+psql $POSTGRES_DSN -f migrations/014_news_facts.sql
+psql $POSTGRES_DSN -f migrations/015_prediction_outcomes.sql
+psql $POSTGRES_DSN -f migrations/016_regime_trust.sql
 ```
 
 Feedback aggregator:

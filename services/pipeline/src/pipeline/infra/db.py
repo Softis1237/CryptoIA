@@ -515,7 +515,7 @@ def upsert_model_registry(
 ) -> None:
     """Insert or update a model entry in model_registry table.
 
-    Requires migration 011_model_registry.sql. Best-effort: swallows exceptions to not break pipeline.
+    Requires migration 012_model_registry.sql. Best-effort: swallows exceptions to not break pipeline.
     """
     sql = (
         "INSERT INTO model_registry (name, version, path_s3, params, metrics) VALUES (%s, %s, %s, %s, %s) "
