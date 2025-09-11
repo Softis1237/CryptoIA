@@ -91,8 +91,11 @@ CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалю
 CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
 
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
+TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
 
-MONTH_STARS, YEAR_STARS — стоимость месячной и годовой подписки в Telegram Stars. Цифровые товары продаются исключительно за Stars.
+PRICE_STARS_MONTH, PRICE_STARS_YEAR — стоимость месячной и годовой подписки в Telegram Stars (милли‑звёздах, например, 2500 и 25000 ≈ $25/$250).
+
+CRYPTO_PAYMENT_URL — ссылка на оплату в криптовалюте.
 
 Оплата: подписку можно оплатить звёздами через Telegram или криптовалютой; бот выдаёт адрес для перевода и активирует доступ после подтверждения.
 
