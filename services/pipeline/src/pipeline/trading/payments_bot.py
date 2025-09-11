@@ -15,6 +15,12 @@ from telegram.ext import (
     filters,
 )
 
+from ..infra.db import (
+    add_subscription,
+    get_subscription_status,
+    mark_payment_refunded,
+    mark_subscription_refunded,
+
 
 import requests
 
@@ -208,6 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
+
 
 
     prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
@@ -413,6 +420,35 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner = os.getenv("TELEGRAM_OWNER_ID")
+    lang = _user_lang(update, context)
+    if not owner or str(update.message.from_user.id) != owner:
+        await update.message.reply_text(_t(lang, "not_enough_rights"))
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /refund <charge_id>")
+        return
+    charge_id = context.args[0]
+    try:
+        user_id = mark_payment_refunded(charge_id)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"refund db error: {e}")
+        await update.message.reply_text("DB error")
+        return
+    if not user_id:
+        await update.message.reply_text(f"Payment not found: {charge_id}")
+        return
+    try:
+        await context.bot.refund_star_payment(
+            user_id=user_id, telegram_payment_charge_id=charge_id
+        )
+        mark_subscription_refunded(user_id)
+        logger.info(f"Refunded charge {charge_id} for user {user_id}")
+        await update.message.reply_text("Refunded")
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"refund api error: {e}")
+        await update.message.reply_text("Refund failed")
+
     lang = _user_lang(update, context)
     if not _is_admin(update.message.from_user.id):
         await update.message.reply_text(_t(lang, "not_enough_rights"))
