@@ -82,11 +82,11 @@ NEWS_SENSITIVE_MODELS — список моделей, которым нель�
 
 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — токен бота и ID канала/чата для публикаций.
 
-TELEGRAM_PROVIDER_TOKEN — токен провайдера платежей (комиссии Telegram).
-
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
 
-PRICE_CENTS, CURRENCY — стоимость подписки (2500 центов = 25 USD) и валюта.
+MONTH_STARS, YEAR_STARS — стоимость подписки в Telegram Stars (например, 500 и 5000).
+
+CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалюте.
 
 6. Наблюдаемость и логирование
 
@@ -131,8 +131,6 @@ EXEC_ENTRY — market или limit.
 DRY_RUN — если 1, ордера не отправляются (бумажный режим).
 
 RISK_LOOP_INTERVAL, RISK_TRAIL_PCT, RISK_IMPROVE_PCT — параметры trailing‑stop.
-
-PRICE_CENTS, CURRENCY — для платных подписок через Telegram.
 
 9. Прочее
 

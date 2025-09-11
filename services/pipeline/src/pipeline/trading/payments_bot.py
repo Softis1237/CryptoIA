@@ -1,32 +1,32 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
 
 from loguru import logger
-from telegram import LabeledPrice, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update
 from telegram.ext import (
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    PreCheckoutQueryHandler,
     MessageHandler,
-    CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     filters,
 )
+
 from ..infra.db import add_subscription, get_subscription_status
 from .subscriptions import sweep_and_revoke_channel_access
 
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN")
-PRIVATE_CHANNEL_ID = os.getenv("TELEGRAM_PRIVATE_CHANNEL_ID")  # e.g. -100123456789 or @channel
+PRIVATE_CHANNEL_ID = os.getenv(
+    "TELEGRAM_PRIVATE_CHANNEL_ID"
+)  # e.g. -100123456789 or @channel
 
 
 # Pricing/config
-PRICE_CENTS = int(os.getenv("PRICE_CENTS", os.getenv("PRICE_USD_CENTS", "2500")))  # default $25
-CURRENCY = os.getenv("CURRENCY", "USD")
+MONTH_STARS = int(os.getenv("MONTH_STARS", "500"))
+YEAR_STARS = int(os.getenv("YEAR_STARS", "5000"))
+CRYPTO_PAYMENT_LINK = os.getenv("CRYPTO_PAYMENT_LINK")
 PAYLOAD = "subscription_1m"
 
 
@@ -47,7 +47,6 @@ I18N = {
             "О проекте: ежедневные релизы 00:00/12:00, прогнозы 4h/12h, "
             "новости и карточка сделки в приватном канале."
         ),
-        "buy_not_configured": "Платёжный провайдер не настроен. Обратитесь к админу.",
         "invoice_title": "Подписка BTC Forecast",
         "invoice_desc": "Месячная подписка на закрытый канал с прогнозами 2 раза в день",
         "invoice_item": "Подписка на месяц",
@@ -63,6 +62,8 @@ I18N = {
         "invite_fail": "Не удалось выдать инвайт автоматически, свяжитесь с администратором.",
         "not_enough_rights": "Недостаточно прав.",
         "sweep_done": "Готово. Истекших подписок: {count}",
+        "crypto_link": "Или оплатите криптовалютой:",
+        "crypto_pay": "Оплатить криптой",
     },
     "en": {
         "start": (
@@ -79,7 +80,6 @@ I18N = {
             "About: daily releases at 00:00/12:00 with 4h/12h forecasts, "
             "news and a trade card in a private channel."
         ),
-        "buy_not_configured": "Payment provider is not configured. Please contact admin.",
         "invoice_title": "BTC Forecast Subscription",
         "invoice_desc": "Monthly access to a private channel with 2 posts/day",
         "invoice_item": "Monthly subscription",
@@ -95,6 +95,8 @@ I18N = {
         "invite_fail": "Failed to create invite link automatically, please contact admin.",
         "not_enough_rights": "Not enough rights.",
         "sweep_done": "Done. Expired subscriptions: {count}",
+        "crypto_link": "Or pay with crypto:",
+        "crypto_pay": "Pay with crypto",
     },
 }
 
@@ -113,8 +115,8 @@ def _set_user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str
         pass
 
 
-def _t(lang: str, key: str, **kwargs) -> str:
-    return (I18N.get(lang, I18N["ru"]).get(key, key)).format(**kwargs)
+def _t(language: str, key: str, **kwargs) -> str:
+    return (I18N.get(language, I18N["ru"]).get(key, key)).format(**kwargs)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,20 +126,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
-    if not PROVIDER_TOKEN:
-        await update.message.reply_text(_t(lang, "buy_not_configured"))
-        return
-    prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=PRICE_CENTS)]
+    prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
     await update.message.reply_invoice(
         title=_t(lang, "invoice_title"),
         description=_t(lang, "invoice_desc"),
         payload=PAYLOAD,
-        provider_token=PROVIDER_TOKEN,
-        currency=CURRENCY,
+        currency="XTR",
         prices=prices,
         need_name=False,
         need_email=False,
     )
+    if CRYPTO_PAYMENT_LINK:
+        btn = InlineKeyboardButton(_t(lang, "crypto_pay"), url=CRYPTO_PAYMENT_LINK)
+        await update.message.reply_text(
+            _t(lang, "crypto_link"), reply_markup=InlineKeyboardMarkup([[btn]])
+        )
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,7 +157,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Invite to private channel if configured and bot is admin
     if PRIVATE_CHANNEL_ID:
         try:
-            link = await context.bot.create_chat_invite_link(chat_id=PRIVATE_CHANNEL_ID, name=f"sub-{user.id}")
+            link = await context.bot.create_chat_invite_link(
+                chat_id=PRIVATE_CHANNEL_ID, name=f"sub-{user.id}"
+            )
             await update.message.reply_text(f"Вступайте: {link.invite_link}")
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Failed to create invite link: {e}")
@@ -163,7 +168,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Save subscription in DB (1 month)
     try:
         payload = update.message.to_dict() if update and update.message else {}
-        add_subscription(user.id, provider="telegram_payments", months=1, payload=payload)
+        add_subscription(
+            user.id, provider="telegram_payments", months=1, payload=payload
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Failed to add subscription: {e}")
 
@@ -181,7 +188,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(_t(lang, "status_none"))
     except Exception as e:  # noqa: BLE001
         logger.exception(f"status error: {e}")
-        await update.message.reply_text("Error. Try later." if _user_lang(update, context) == "en" else "Ошибка проверки статуса. Попробуйте позже.")
+        await update.message.reply_text(
+            "Error. Try later."
+            if _user_lang(update, context) == "en"
+            else "Ошибка проверки статуса. Попробуйте позже."
+        )
 
 
 async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,7 +203,9 @@ async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if PRIVATE_CHANNEL_ID:
         try:
-            link = await context.bot.create_chat_invite_link(chat_id=PRIVATE_CHANNEL_ID, name=f"sub-{update.message.from_user.id}")
+            link = await context.bot.create_chat_invite_link(
+                chat_id=PRIVATE_CHANNEL_ID, name=f"sub-{update.message.from_user.id}"
+            )
             await update.message.reply_text(f"Вступайте: {link.invite_link}")
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Failed to create invite link: {e}")
@@ -221,11 +234,15 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def lang_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
-    kb = [[
-        InlineKeyboardButton(_t(lang, "lang_ru"), callback_data="lang:ru"),
-        InlineKeyboardButton(_t(lang, "lang_en"), callback_data="lang:en"),
-    ]]
-    await update.message.reply_text(_t(lang, "lang_choose"), reply_markup=InlineKeyboardMarkup(kb))
+    kb = [
+        [
+            InlineKeyboardButton(_t(lang, "lang_ru"), callback_data="lang:ru"),
+            InlineKeyboardButton(_t(lang, "lang_en"), callback_data="lang:en"),
+        ]
+    ]
+    await update.message.reply_text(
+        _t(lang, "lang_choose"), reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 
 async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
