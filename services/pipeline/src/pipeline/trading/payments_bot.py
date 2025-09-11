@@ -29,23 +29,11 @@ PRIVATE_CHANNEL_ID = os.getenv(
 )  # e.g. -100123456789 or @channel
 
 
-# Pricing/config
-MONTH_STARS = int(os.getenv("MONTH_STARS", "500"))
-YEAR_STARS = int(os.getenv("YEAR_STARS", "5000"))
-CRYPTO_PAYMENT_LINK = os.getenv("CRYPTO_PAYMENT_LINK")
-PAYLOAD = "subscription_1m"
-
-PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN", "")
-PRIVATE_CHANNEL_ID = os.getenv(
-    "TELEGRAM_PRIVATE_CHANNEL_ID"
-)  # e.g. -100123456789 or @channel
 CRYPTO_PAYMENT_URL = os.getenv("CRYPTO_PAYMENT_URL", "")
 
-
 # Pricing/config (Stars)
-PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "500"))
-PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "5000"))
-
+PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
+PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
 
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
@@ -56,10 +44,10 @@ I18N = {
             "новости и карточка сделки в приватном канале."
         ),
         "invoice_title": "Подписка BTC Forecast",
-        "invoice_desc_month": "Месячная подписка на закрытый канал с прогнозами 2 раза в день",
-        "invoice_desc_year": "Годовая подписка на закрытый канал с прогнозами 2 раза в день",
-        "invoice_item_month": "Подписка на месяц",
-        "invoice_item_year": "Подписка на год",
+        "invoice_desc_month": "Месячная подписка на закрытый канал с прогнозами 2 раза в день. Промо-цена $25 (обычно $50).",
+        "invoice_desc_year": "Годовая подписка на закрытый канал с прогнозами 2 раза в день за $250.",
+        "invoice_item_month": "Подписка на месяц — $25 промо (обычно $50)",
+        "invoice_item_year": "Подписка на год — $250",
         "payment_ok": "Оплата получена. Спасибо! Выдаю доступ в закрытый канал.",
         "no_active": "Нет активной подписки. Используйте /buy.",
         "status_active": "Статус: активна до {ends}",
@@ -78,8 +66,8 @@ I18N = {
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
         "choose_plan": "Выберите план:",
-        "plan_month": "Месяц",
-        "plan_year": "Год",
+        "plan_month": "Месяц $25 промо (вместо $50)",
+        "plan_year": "Год $250",
         "choose_method": "Выберите способ оплаты:",
         "method_stars": "Stars",
         "method_crypto": "Крипто-сайт",
@@ -95,10 +83,10 @@ I18N = {
             "news and a trade card in a private channel."
         ),
         "invoice_title": "BTC Forecast Subscription",
-        "invoice_desc_month": "Monthly access to a private channel with 2 posts/day",
-        "invoice_desc_year": "Yearly access to a private channel with 2 posts/day",
-        "invoice_item_month": "Monthly subscription",
-        "invoice_item_year": "Yearly subscription",
+        "invoice_desc_month": "Monthly access to a private channel with 2 posts/day. Promo price $25 (normally $50).",
+        "invoice_desc_year": "Yearly access to a private channel with 2 posts/day for $250.",
+        "invoice_item_month": "Monthly subscription — $25 promo (was $50)",
+        "invoice_item_year": "Yearly subscription — $250",
         "payment_ok": "Payment received. Thank you! Granting channel access.",
         "no_active": "No active subscription. Use /buy.",
         "status_active": "Status: active until {ends}",
@@ -117,8 +105,8 @@ I18N = {
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
         "choose_plan": "Choose a plan:",
-        "plan_month": "Month",
-        "plan_year": "Year",
+        "plan_month": "Month $25 promo (was $50)",
+        "plan_year": "Year $250",
         "choose_method": "Choose payment method:",
         "method_stars": "Stars",
         "method_crypto": "Crypto site",
@@ -167,6 +155,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
 
+
     prices = [LabeledPrice(label=_t(lang, "invoice_item"), amount=MONTH_STARS * 100)]
     await update.message.reply_invoice(
         title=_t(lang, "invoice_title"),
@@ -177,6 +166,8 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         need_name=False,
         need_email=False,
     )
+
+
     kb = [
         [
             InlineKeyboardButton(_t(lang, "plan_month"), callback_data="plan:1"),
@@ -217,11 +208,6 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         _t(lang, "choose_method"), reply_markup=InlineKeyboardMarkup(kb)
     )
-    if CRYPTO_PAYMENT_LINK:
-        btn = InlineKeyboardButton(_t(lang, "crypto_pay"), url=CRYPTO_PAYMENT_LINK)
-        await update.message.reply_text(
-            _t(lang, "crypto_link"), reply_markup=InlineKeyboardMarkup([[btn]])
-        )
 
 
 async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,14 +222,10 @@ async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = PRICE_STARS_MONTH if months_i == 1 else PRICE_STARS_YEAR
         label_key = "invoice_item_month" if months_i == 1 else "invoice_item_year"
         desc_key = "invoice_desc_month" if months_i == 1 else "invoice_desc_year"
-        if not PROVIDER_TOKEN:
-            await q.message.reply_text(_t(lang, "buy_not_configured"))
-            return
         await q.message.reply_invoice(
             title=_t(lang, "invoice_title"),
             description=_t(lang, desc_key),
             payload=f"sub_{months_i}m",
-            provider_token=PROVIDER_TOKEN,
             currency="XTR",
             prices=[LabeledPrice(label=_t(lang, label_key), amount=price)],
             need_name=False,
