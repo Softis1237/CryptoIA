@@ -83,7 +83,7 @@ ENABLE_SOCIAL, SOCIAL_QUERY, SOCIAL_SUBREDDITS, SOCIAL_MAX_ITEMS, TWITTER_BEARER
 
 ENABLE_DEEP_PRICE — загрузка свечей 1s/5s.
 
-ENABLE_NEWS_TWITTER/REDDIT/STACKOVERFLOW — включение отдельных источников новостей.
+ 
 
 USE_HF_SENTIMENT, HF_SENTIMENT_MODEL — использовать HuggingFace модель для оценки настроений (по умолчанию — off). Модель по умолчанию: nlptown/bert-base-multilingual-uncased-sentiment.
 

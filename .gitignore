@@ -29,3 +29,6 @@ artifacts/
 .DS_Store
 Thumbs.db
 
+# Local state & artifacts not for VCS
+flowise_data/
+runs/

@@ -24,3 +24,4 @@ async def crypto_webhook(
         raise HTTPException(status_code=401, detail="invalid signature")
     # Process webhook payload here (e.g. update subscription)
     return {"ok": True}
+

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List
 
 import ccxt
@@ -75,20 +74,11 @@ def run(payload: IngestPricesInput) -> IngestPricesOutput:
 
     date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slot = payload.slot or "manual"
-    local_dir = Path(f"runs/{date_key}/{slot}")
-    local_dir.mkdir(parents=True, exist_ok=True)
-    local_path = local_dir / "prices.parquet"
-
     table = pa.Table.from_pandas(df)
-    pq.write_table(table, local_path)
-
     sink = pa.BufferOutputStream()
     pq.write_table(table, sink, compression="zstd")
-    s3_uri = upload_bytes(
-        str(local_path),
-        sink.getvalue().to_pybytes(),
-        content_type="application/octet-stream",
-    )
+    s3_key = f"runs/{date_key}/{slot}/prices.parquet"
+    s3_uri = upload_bytes(s3_key, sink.getvalue().to_pybytes(), content_type="application/octet-stream")
 
     return IngestPricesOutput(
         run_id=payload.run_id,
