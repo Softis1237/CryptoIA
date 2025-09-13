@@ -170,7 +170,34 @@ services:
     env_file: .env
     depends_on:
       - postgres
-    command: -m pipeline.trading.paper_trading executor
+    command: -m pipeline.trading.paper_trading executor_loop --interval=60
+    restart: unless-stopped
+    environment:
+      - CCXT_EXCHANGE=binance
+
+  trigger_agent:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - redis
+      - postgres
+    command: -m pipeline.rt.trigger_agent
+    restart: unless-stopped
+    environment:
+      - CCXT_EXCHANGE=binance
+
+  rt_master:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - redis
+      - postgres
+      - minio
+      - createbuckets
+    command: -m pipeline.rt.master_reactor
+    restart: unless-stopped
     environment:
       - CCXT_EXCHANGE=binance
 

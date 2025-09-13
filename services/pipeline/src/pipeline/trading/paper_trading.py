@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Tuple
 
 import ccxt
 from loguru import logger
@@ -22,18 +22,23 @@ def _now_utc() -> datetime:
 def _ensure_account(start_equity: float = 1000.0) -> str:
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Use monthly accounts: cfg_json->>'month' = YYYY-MM
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
             cur.execute(
-                "SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+                "SELECT id FROM paper_accounts WHERE cfg_json->>'month'=%s ORDER BY created_at DESC LIMIT 1",
+                (month,),
             )
             row = cur.fetchone()
             if row:
                 return row[0]
+            # Create new monthly account
+            cfg = {"month": month}
             cur.execute(
                 "INSERT INTO paper_accounts (start_equity, equity, cfg_json) VALUES (%s, %s, %s) RETURNING id",
-                (start_equity, start_equity, None),
+                (start_equity, start_equity, cfg),
             )
             acc_id = cur.fetchone()[0]
-            logger.info(f"Created paper account {acc_id}")
+            logger.info(f"Created monthly paper account {acc_id} for {month}")
             return acc_id
 
 
@@ -45,8 +50,48 @@ def _get_mark_price(symbol: str = SYMBOL) -> float:
     return float(t["last"]) if t and t.get("last") else float(t["close"])  # type: ignore[index]
 
 
+def _open_from_suggestion(cur, acc_id: str, sug_row: Tuple) -> None:
+    run_id = sug_row[0]
+    side = sug_row[1]
+    if side == "NO-TRADE":
+        logger.info(f"Suggestion {run_id} is NO-TRADE")
+        return
+    cur.execute(
+        "SELECT 1 FROM paper_positions WHERE meta_json->>'run_id'=%s AND status='OPEN'",
+        (run_id,),
+    )
+    if cur.fetchone():
+        logger.info(f"Position for {run_id} already open")
+        return
+    price = _get_mark_price()
+    entry = float(price)
+    sl = float(sug_row[4])
+    tp = float(sug_row[5])
+    lev = float(sug_row[3])
+    # Simple position sizing: 0.5% risk on account equity
+    cur.execute("SELECT equity FROM paper_accounts WHERE id=%s", (acc_id,))
+    equity = float(cur.fetchone()[0])
+    risk_amount = float(os.getenv("PAPER_RISK_PER_TRADE", "0.005")) * equity
+    qty = risk_amount / max(1e-6, abs(entry - sl))  # BTC size
+    cur.execute(
+        "INSERT INTO paper_positions (account_id, opened_at, side, entry, leverage, qty, sl, tp, status, meta_json) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s) RETURNING pos_id",
+        (acc_id, _now_utc(), side, entry, lev, qty, sl, tp, {"run_id": run_id}),
+    )
+    pos_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO paper_trades (pos_id, ts, price, qty, side, fee, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (pos_id, _now_utc(), entry, qty, "OPEN", 0.0, "market_open"),
+    )
+    logger.info(f"Opened paper position {pos_id} from suggestion {run_id} at {entry}")
+
+
 def executor_once(run_id: Optional[str] = None):
-    """Open position from latest trade_suggestion if not opened yet."""
+    """Open paper positions from new trade suggestions.
+
+    If run_id provided — process exactly that suggestion. Otherwise, open all
+    suggestions from lookback window with no open positions yet.
+    """
     acc_id = _ensure_account()
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -55,49 +100,27 @@ def executor_once(run_id: Optional[str] = None):
                     "SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE run_id=%s",
                     (run_id,),
                 )
-            else:
-                cur.execute(
-                    "SELECT run_id, side, entry_zone, leverage, sl, tp, times_json FROM trades_suggestions ORDER BY created_at DESC LIMIT 1"
-                )
-            sug = cur.fetchone()
-            if not sug:
-                logger.info("No trade suggestions found")
+                sug = cur.fetchone()
+                if not sug:
+                    logger.info("No such suggestion")
+                    return
+                _open_from_suggestion(cur, acc_id, sug)
                 return
-            run_id = sug[0]
-            side = sug[1]
-            if side == "NO-TRADE":
-                logger.info(f"Suggestion {run_id} is NO-TRADE")
+            # Batch open from recent suggestions window
+            lookback_days = float(os.getenv("PAPER_EXEC_LOOKBACK_DAYS", "3"))
+            cur.execute(
+                "SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE created_at >= now() - (%s || ' days')::interval ORDER BY created_at ASC",
+                (str(lookback_days),),
+            )
+            rows = cur.fetchall() or []
+            if not rows:
+                logger.info("No trade suggestions found in lookback window")
                 return
-            cur.execute(
-                "SELECT 1 FROM paper_positions WHERE meta_json->>'run_id'=%s AND status='OPEN'",
-                (run_id,),
-            )
-            if cur.fetchone():
-                logger.info(f"Position for {run_id} already open")
-                return
-            price = _get_mark_price()
-            entry = float(price)
-            sl = float(sug[4])
-            tp = float(sug[5])
-            lev = float(sug[3])
-            # Simple position sizing: 0.5% risk on account equity
-            cur.execute("SELECT equity FROM paper_accounts WHERE id=%s", (acc_id,))
-            equity = float(cur.fetchone()[0])
-            risk_amount = 0.005 * equity
-            qty = risk_amount / max(1e-6, abs(entry - sl))  # BTC size
-            cur.execute(
-                "INSERT INTO paper_positions (account_id, opened_at, side, entry, leverage, qty, sl, tp, status, meta_json) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s) RETURNING pos_id",
-                (acc_id, _now_utc(), side, entry, lev, qty, sl, tp, {"run_id": run_id}),
-            )
-            pos_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO paper_trades (pos_id, ts, price, qty, side, fee, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (pos_id, _now_utc(), entry, qty, "OPEN", 0.0, "market_open"),
-            )
-            logger.info(
-                f"Opened paper position {pos_id} from suggestion {run_id} at {entry}"
-            )
+            opened = 0
+            for sug in rows:
+                _open_from_suggestion(cur, acc_id, sug)
+                opened += 1
+            logger.info(f"Paper executor processed suggestions: {opened}")
 
 
 def _close_position(cur, pos_id: str, exit_price: float, reason: str):
@@ -163,7 +186,7 @@ def risk_loop(interval_s: int = 60):
                 with get_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
-                            "SELECT id, equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+                            "SELECT id, equity FROM paper_accounts ORDER BY created_at DESC LIMIT 1"
                         )
                         row = cur.fetchone()
                         if row:
@@ -177,6 +200,15 @@ def risk_loop(interval_s: int = 60):
         except Exception as e:  # noqa: BLE001
             logger.exception(f"risk_loop error: {e}")
         time.sleep(interval_s)
+
+
+def executor_loop(interval_s: int = 60):
+    while True:
+        try:
+            executor_once()
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"executor_loop error: {e}")
+        time.sleep(max(5, int(interval_s)))
 
 
 def settler_loop(interval_s: int = 60):
@@ -221,7 +253,7 @@ def admin_report():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, equity, start_equity FROM paper_accounts ORDER BY created_at ASC LIMIT 1"
+                "SELECT id, equity, start_equity FROM paper_accounts ORDER BY created_at DESC LIMIT 1"
             )
             acc = cur.fetchone()
             if not acc:
@@ -304,6 +336,8 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("executor")
+    el = sub.add_parser("executor_loop")
+    el.add_argument("--interval", type=int, default=60)
     rl = sub.add_parser("risk")
     rl.add_argument("--interval", type=int, default=60)
     sl = sub.add_parser("settler")
@@ -313,6 +347,8 @@ def main():
 
     if args.cmd == "executor":
         executor_once()
+    elif args.cmd == "executor_loop":
+        executor_loop(interval_s=args.interval)
     elif args.cmd == "risk":
         risk_loop(interval_s=args.interval)
     elif args.cmd == "settler":

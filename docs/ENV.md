@@ -262,6 +262,35 @@ Order Flow (тик‑стрим)
 - ORDERFLOW_POLL_SEC — период REST‑опроса (по умолчанию 1 сек).
 - ORDERFLOW_USE_WS — использовать WebSocket‑стрим через ccxt.pro (если установлен) вместо REST‑опроса (0/1).
 
+Real‑Time режим (Trigger → Master)
+
+- RT_TRIGGER_QUEUE — ключ Redis‑очереди для триггеров (по умолчанию `rt:triggers`).
+- TRIGGER_SYMBOL — символ для мониторинга триггер‑агентом (по умолчанию берётся `PAPER_SYMBOL`).
+- TRIGGER_POLL_SLEEP — пауза между циклами триггер‑агента (сек, по умолчанию 5).
+- TRIGGER_VOL_SPIKE_FACTOR — порог срабатывания по объёму: (объём_минуты / EMA_24ч) ≥ factor (по умолчанию 3.0).
+- TRIGGER_VOL_EMA_ALPHA — сглаживание EMA для базовой линии объёма (по умолчанию 0.03).
+- TRIGGER_DELTA_BASE_MIN — минимальная |дельта_5м| в базовой валюте для триггера DELTA_SPIKE (по умолчанию 20.0).
+- TRIGGER_COOLDOWN_SEC — антидребезг: таймаут между триггерами одного типа (по умолчанию 300 сек).
+- TRIGGER_WATCH_NEWS — включить детекцию новостей (по умолчанию 1).
+- TRIGGER_NEWS_IMPACT_MIN — минимальный impact_score для новостного триггера (по умолчанию 0.7).
+- TRIGGER_NEWS_LOOKBACK_SEC — окно поиска свежих новостей (по умолчанию 120 сек).
+- TRIGGER_ADAPTIVE — адаптация порогов по результатам paper PnL (по умолчанию 1).
+- TRIGGER_ADAPT_EVERY_SEC — период пересчёта приоритетов триггеров (по умолчанию 300 сек).
+
+- RT_HORIZON_DEFAULT_MIN — дефолтный горизонт real‑time прогноза в минутах (по умолчанию 30).
+- RT_HORIZON_VOL_SPIKE_MIN — горизонт для VOL_SPIKE (по умолчанию 30).
+- RT_HORIZON_DELTA_SPIKE_MIN — горизонт для DELTA_SPIKE (по умолчанию 30).
+- RT_HORIZON_NEWS_MIN — горизонт для NEWS (по умолчанию 60).
+- RT_PRICES_LOOKBACK_SEC — глубина цен для real‑time анализа (по умолчанию 172800 = 48ч).
+- RT_TIMEFRAME — таймфрейм для загрузки цен (по умолчанию `1m`).
+- RT_NEWS_WINDOW_H — окно новостей для расчёта признаков (по умолчанию 6 часов).
+- RT_VALID_FOR_MIN — время валидности карточки real‑time сигнала (по умолчанию 30 мин).
+
+Paper Trading (цикличность и исполнение)
+
+- PAPER_EXEC_LOOKBACK_DAYS — за сколько дней подбирать новые рекомендации для открытия в исполнителе (по умолчанию 3).
+- PAPER_RISK_PER_TRADE — риск на сделку в paper (доля от equity, по умолчанию 0.005).
+
 Кэш y_true для ускорения динамического взвешивания
 
 - YTRUE_CACHE_TTL_SEC — TTL кэша (в Redis) для фактических цен y_true, вычисляемых через CCXT при оценке похожих окон (по умолчанию 86400 сек).
