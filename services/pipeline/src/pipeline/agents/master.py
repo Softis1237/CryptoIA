@@ -31,6 +31,8 @@ from ..trading.verifier import verify
 from ..data.ingest_prices import IngestPricesInput, run as run_prices
 from ..data.ingest_news import IngestNewsInput, run as run_news
 from ..features.features_calc import FeaturesCalcInput, run as run_features
+from ..reasoning.chart_reasoning import ChartReasoningInput as _CRInput
+from ..reasoning.chart_reasoning import run as run_chart_reasoning
 
 
 @dataclass
@@ -131,7 +133,13 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         {p.get("model"): {k: p.get(k) for k in ("y_hat", "pi_low", "pi_high", "proba_up", "cv_metrics")} for p in preds12},
     )
 
-    # 4) Debate + explain
+    # 4) Chart reasoning (LLM-based technical view)
+    try:
+        ta = run_chart_reasoning(_CRInput(features_path_s3=features_s3))
+    except Exception:
+        ta = {"technical_sentiment": "neutral", "confidence_score": 0.5, "key_observations": []}
+
+    # 5) Debate + explain
     try:
         news_top = [f"{s.get('title')} ({s.get('source')})" for s in news_signals[:3]]
     except Exception:
@@ -141,12 +149,20 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         f"{it.get('created_at')} run={it.get('run_id')} p_up4h={((it.get('final') or {}).get('e4') or {}).get('proba_up', '')}"
         for it in (memory_items.get("items") or [])
     ]
+    # Append compressed lessons (if any) for richer long-term memory context
+    try:
+        lessons_resp = call_tool("get_lessons", {"n": 3}) or {"items": []}
+        for ls in lessons_resp.get("items") or []:
+            mem.append(f"lesson: {ls.get('lesson_text')}")
+    except Exception:
+        pass
     deb_text, risk_flags = multi_debate(
         regime=str(regime.get("label")),
         news_top=news_top,
         neighbors=topk,
         memory=mem,
         trust=(e4.get("weights") or {}),
+        ta=ta,
     )
     expl_text = explain_short(
         float(e4.get("y_hat", 0.0) or 0.0), float(e4.get("proba_up", 0.5) or 0.5), news_top, e4.get("rationale_points") or []
@@ -165,7 +181,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 5) Trade card
+    # 6) Trade card
     last_price = float(out4.get("last_price", 0.0) or 0.0)
     atr = float(out4.get("atr", 0.0) or 0.0)
     tri = TradeRecommendInput(
@@ -194,7 +210,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     )
     upsert_trade_suggestion(run_id, card)
 
-    # 6) Persist explanation, memory
+    # 7) Persist explanation, memory
     md = (
         "<b>Почему так</b>\n"
         + expl_text
@@ -208,6 +224,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         "slot": slot,
         "regime": str(regime.get("label")),
         "regime_conf": float(regime.get("confidence", 0.0) or 0.0),
+        "ta": ta,
         "e4": {
             "y_hat": float(e4.get("y_hat", 0.0) or 0.0),
             "proba_up": float(e4.get("proba_up", 0.5) or 0.5),
@@ -265,4 +282,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

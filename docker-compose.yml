@@ -105,6 +105,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    env_file: .env
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false

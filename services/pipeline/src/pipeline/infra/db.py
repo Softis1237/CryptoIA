@@ -1212,3 +1212,138 @@ def fetch_technical_patterns() -> list[dict]:
                     }
                 )
     return out
+
+
+def upsert_technical_pattern(
+    name: str,
+    category: str,
+    timeframe: str,
+    definition: dict,
+    description: str | None = None,
+    source: str | None = None,
+    confidence_default: float = 0.6,
+) -> None:
+    sql = (
+        "INSERT INTO technical_patterns (name, category, timeframe, definition_json, description, source, confidence_default) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (name) DO UPDATE SET category=EXCLUDED.category, timeframe=EXCLUDED.timeframe, definition_json=EXCLUDED.definition_json, description=EXCLUDED.description, source=EXCLUDED.source, confidence_default=EXCLUDED.confidence_default"
+    )
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (name, category, timeframe, _Json(definition or {}), description, source, float(confidence_default)))
+
+
+def fetch_agent_config(agent_name: str) -> dict | None:
+    sql = (
+        "SELECT system_prompt, parameters_json FROM agent_configurations "
+        "WHERE agent_name=%s AND is_active=true ORDER BY version DESC LIMIT 1"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            sys, params = row
+            return {"system_prompt": sys or "", "parameters": params or {}}
+
+
+def insert_agent_config(
+    agent_name: str,
+    system_prompt: str | None,
+    parameters: dict | None,
+    make_active: bool = True,
+) -> int:
+    """Insert a new version for an agent; returns version number.
+
+    If make_active=True, deactivate previous active versions for this agent.
+    """
+    # fetch latest version
+    sel = "SELECT COALESCE(MAX(version), 0) FROM agent_configurations WHERE agent_name=%s"
+    upd_off = "UPDATE agent_configurations SET is_active=false WHERE agent_name=%s AND is_active=true"
+    ins = (
+        "INSERT INTO agent_configurations (agent_name, version, system_prompt, parameters_json, is_active) "
+        "VALUES (%s, %s, %s, %s, %s)"
+    )
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sel, (agent_name,))
+            ver = int((cur.fetchone() or [0])[0]) + 1
+            if make_active:
+                cur.execute(upd_off, (agent_name,))
+            cur.execute(ins, (agent_name, ver, system_prompt, _Json(parameters or {}), bool(make_active)))
+            return ver
+
+
+def insert_pattern_metrics(
+    symbol: str,
+    timeframe: str,
+    window_hours: int,
+    move_threshold: float,
+    sample_count: int,
+    pattern_name: str,
+    expected_direction: str,
+    match_count: int,
+    success_count: int,
+    success_rate: float,
+    p_value: float,
+    definition: dict | None = None,
+    summary: dict | None = None,
+) -> None:
+    sql = (
+        "INSERT INTO pattern_discovery_metrics "
+        "(symbol, timeframe, window_hours, move_threshold, sample_count, pattern_name, expected_direction, match_count, success_count, success_rate, p_value, definition_json, summary_json) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+    )
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    symbol,
+                    timeframe,
+                    int(window_hours),
+                    float(move_threshold),
+                    int(sample_count),
+                    pattern_name,
+                    expected_direction,
+                    int(match_count),
+                    int(success_count),
+                    float(success_rate),
+                    float(p_value),
+                    _Json(definition or {}),
+                    _Json(summary or {}),
+                ),
+            )
+
+
+# --- Lessons (compressed memory) -------------------------------------------
+
+def insert_agent_lesson(lesson_text: str, scope: str = "global", meta: dict | None = None) -> None:
+    sql = "INSERT INTO agent_lessons (lesson_text, scope, meta) VALUES (%s, %s, %s)"
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (lesson_text, scope, _Json(meta or {})))
+
+
+def fetch_recent_agent_lessons(n: int = 5) -> list[dict]:
+    sql = "SELECT created_at, scope, lesson_text, meta FROM agent_lessons ORDER BY created_at DESC LIMIT %s"
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(n),))
+            rows = cur.fetchall() or []
+            for created_at, scope, txt, meta in rows:
+                out.append(
+                    {
+                        "created_at": created_at.isoformat() if created_at else "",
+                        "scope": str(scope or "global"),
+                        "lesson_text": str(txt or ""),
+                        "meta": meta or {},
+                    }
+                )
+    return out

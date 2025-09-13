@@ -32,8 +32,15 @@ from ..models.models import run as _run_models
 from ..ensemble.ensemble_rank import EnsembleInput as _EnsembleInput
 from ..ensemble.ensemble_rank import run as _run_ensemble
 from ..infra.db import fetch_recent_run_summaries as _fetch_run_summaries
+from ..infra.db import fetch_recent_agent_lessons as _fetch_lessons
 from ..agents.event_study import EventStudyInput as _EventStudyInput
 from ..agents.event_study import run as _run_event_study
+from ..agents.pattern_discovery import DiscoveryInput as _DiscInput
+from ..agents.pattern_discovery import run as _run_discovery
+from ..agents.memory_compressor import MemoryCompressInput as _MCInput
+from ..agents.memory_compressor import run as _run_memory_compress
+from ..agents.cognitive_architect import CognitiveArchitectInput as _CAInput
+from ..agents.cognitive_architect import run as _run_cognitive
 
 
 def _read_features(features_s3: str) -> pd.DataFrame:
@@ -174,11 +181,48 @@ def tool_run_event_study(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def tool_run_pattern_discovery(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Stub for PatternDiscoveryAgent.
+    """Run PatternDiscoveryAgent (can be dry-run by default).
 
-    Returns not-implemented for now; will be wired to the real agent in Phase 2.
+    params: {symbol?, provider?, timeframe?, days?, move_threshold?, window_hours?, lookback_hours_pre?, sample_limit?, dry_run?}
     """
-    return {"status": "not-implemented"}
+    payload = _DiscInput(
+        symbol=str(params.get("symbol", "BTC/USDT")),
+        provider=str(params.get("provider", "binance")),
+        timeframe=str(params.get("timeframe", "1h")),
+        days=int(params.get("days", 120)),
+        move_threshold=float(params.get("move_threshold", 0.05)),
+        window_hours=int(params.get("window_hours", 24)),
+        lookback_hours_pre=int(params.get("lookback_hours_pre", 48)),
+        sample_limit=int(params.get("sample_limit", 40)),
+        dry_run=bool(params.get("dry_run", True)),
+    )
+    return _run_discovery(payload)
+
+
+def tool_compress_memory(params: Dict[str, Any]) -> Dict[str, Any]:
+    n = int(params.get("n", 20))
+    scope = str(params.get("scope", "global"))
+    return _run_memory_compress(_MCInput(n=n, scope=scope))
+
+
+def tool_get_lessons(params: Dict[str, Any]) -> Dict[str, Any]:
+    n = int(params.get("n", 5))
+    items = _fetch_lessons(n)
+    return {"items": items}
+
+
+def tool_run_cognitive_architect(params: Dict[str, Any]) -> Dict[str, Any]:
+    n = int(params.get("analyze_n", 50))
+    targets = params.get("target_agents") or ["ChartReasoningAgent", "DebateArbiter"]
+    return _run_cognitive(_CAInput(analyze_n=n, target_agents=targets))
+
+
+def tool_get_chart_reasoning(params: Dict[str, Any]) -> Dict[str, Any]:
+    from ..reasoning.chart_reasoning import ChartReasoningInput as _CRI, run as _run_cr
+    s3 = str(params.get("features_s3"))
+    if not s3:
+        raise ValueError("features_s3 is required")
+    return _run_cr(_CRI(features_path_s3=s3))
 
 
 TOOLS = {
@@ -191,6 +235,10 @@ TOOLS = {
     "get_recent_run_summaries": tool_get_recent_run_summaries,
     "run_event_study": tool_run_event_study,
     "run_pattern_discovery": tool_run_pattern_discovery,
+    "compress_memory": tool_compress_memory,
+    "get_lessons": tool_get_lessons,
+    "run_cognitive_architect": tool_run_cognitive_architect,
+    "get_chart_reasoning": tool_get_chart_reasoning,
 }
 
 

@@ -1,0 +1,31 @@
+{
+  "title": "Pattern Discovery Overview",
+  "panels": [
+    {
+      "type": "table",
+      "title": "Recent Patterns",
+      "datasource": {"type": "postgres", "uid": "Postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT discovered_at, pattern_name, timeframe, expected_direction, match_count, success_count, round(success_rate::numeric,3) as success_rate, round(p_value::numeric,3) as p_value FROM pattern_discovery_metrics ORDER BY discovered_at DESC LIMIT 50;",
+          "refId": "A"
+        }
+      ],
+      "options": {"showHeader": true}
+    },
+    {
+      "type": "timeseries",
+      "title": "Avg Success Rate by Day",
+      "datasource": {"type": "postgres", "uid": "Postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', discovered_at) as time, avg(success_rate) as value FROM pattern_discovery_metrics GROUP BY 1 ORDER BY 1;",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}
+

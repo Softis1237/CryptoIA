@@ -24,11 +24,36 @@ LLM orchestration
 
 - flowise: Visual builder for LLM flows (UI at http://localhost:3002 when ports are exposed). Create flows for: sentiment, forecast helper, explain, debate (arbiter), scenario, validate. Each flow exposes an API endpoint: POST /api/v1/prediction/{flowId}.
 - mcp (mini): Lightweight HTTP server exposing safe tools to LLMs (regime detection, similarity, models+ensemble, recent run memory). Auto-started in scheduler when ENABLE_MCP=1.
+  - Extra tools: `run_event_study`, `run_pattern_discovery` (dry-run by default), `compress_memory`, `get_lessons`, `run_cognitive_architect`.
 
 Optional helpers
 
 - windmill: Low‑code runner (kept for future ops automations). UI at http://localhost:8000 (already exposed).
 - order flow (in‑pipeline): optional collector that fetches recent trades via CCXT and enriches features with OFI/дельта. Enable with ENABLE_ORDER_FLOW=1.
+- pattern discovery (Airflow): weekly DAG `pattern_discovery_weekly` runs PatternDiscoveryAgent to propose new entries for `technical_patterns` (by default in dry‑run mode).
+- memory compress (Airflow): monthly DAG `memory_compress_monthly` aggregates recent run summaries into concise lessons (`agent_lessons` table).
+- cognitive architect (Airflow): monthly DAG `cognitive_architect_monthly` proposes updated prompts/configs; writes new versions to `agent_configurations`.
+
+ChartReasoningAgent
+
+- Integrated into MasterAgent pipeline after features build. Uses `agent_configurations` (agent_name="ChartReasoningAgent") for prompt/params; fallback to defaults.
+- Context includes: ATR, MACD, BB width, VWAP, local high/low (50), ATR band, quantiles (Q10/50/90), pivots (P/R1/S1), and detected patterns (pat_*).
+
+MCP examples (inside docker network)
+
+```
+curl -s http://coordinator:8765/call -X POST -H 'Content-Type: application/json' \
+  -d '{"tool":"run_pattern_discovery","params":{"timeframe":"1h","days":60,"dry_run":true}}'
+
+curl -s http://coordinator:8765/call -X POST -H 'Content-Type: application/json' \
+  -d '{"tool":"compress_memory","params":{"n":50,"scope":"global"}}'
+
+curl -s http://coordinator:8765/call -X POST -H 'Content-Type: application/json' \
+  -d '{"tool":"get_lessons","params":{"n":5}}'
+
+curl -s http://coordinator:8765/call -X POST -H 'Content-Type: application/json' \
+  -d '{"tool":"run_cognitive_architect","params":{"analyze_n":50}}'
+```
 
 Keys and where to get them
 

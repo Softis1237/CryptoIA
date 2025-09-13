@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import os
 
 from .llm import call_flowise_json, call_openai_json
+from ..infra.db import fetch_agent_config
 from .schemas import DebateResponse
 
 
@@ -14,6 +15,7 @@ def debate(
     neighbors: Optional[List[dict]] = None,
     memory: Optional[List[str]] = None,
     trust: Optional[Dict[str, float]] = None,
+    ta: Optional[dict] = None,
 ) -> tuple[str, List[str]]:
     sys = (
         "You are an arbiter: distill the arguments into 3–6 grounded bullet points.\n"
@@ -27,12 +29,16 @@ def debate(
         f"Top news: {news_top}\n"
         f"Similar windows: {neighbors}\n"
         f"Memory: {memory or []}\n"
-        f"Trust: {trust or {}}"
+        f"Trust: {trust or {}}\n"
+        f"TA: {ta or {}}"
     )
     raw = call_flowise_json("FLOWISE_DEBATE_URL", {"system": sys, "user": usr})
     if not raw or raw.get("status") == "error":
-        # Prefer dedicated debate model if provided
-        raw = call_openai_json(sys, usr, model=os.getenv("OPENAI_MODEL_DEBATE"))
+        # Prefer dedicated debate model if provided (DB-configurable)
+        cfg = fetch_agent_config("DebateArbiter") or {}
+        params = cfg.get("parameters") or {}
+        model = params.get("model") if isinstance(params, dict) else os.getenv("OPENAI_MODEL_DEBATE")
+        raw = call_openai_json(cfg.get("system_prompt") or sys, usr, model=model)
     data = None
     try:
         if raw and raw.get("status") != "error":
@@ -57,6 +63,7 @@ def multi_debate(
     model_bull: Optional[str] = None,
     model_bear: Optional[str] = None,
     model_quant: Optional[str] = None,
+    ta: Optional[dict] = None,
 ) -> tuple[str, List[str]]:
     """Run a lightweight multi-persona debate and aggregate with the arbiter.
 
@@ -75,7 +82,7 @@ def multi_debate(
         "Верни только JSON {\"bullets\":[...]}"
     )
     ctx = (
-        f"Regime: {regime}\nTop news: {news_top}\nSimilar windows: {neighbors}\nMemory: {memory}\nTrust: {trust}"
+        f"Regime: {regime}\nTop news: {news_top}\nSimilar windows: {neighbors}\nMemory: {memory}\nTrust: {trust}\nTA: {ta}"
     )
     out_bull = call_openai_json(bull_sys, ctx, model=model_bull or os.getenv("OPENAI_MODEL_MASTER") or os.getenv("OPENAI_MODEL_DEBATE"))
     out_bear = call_openai_json(bear_sys, ctx, model=model_bear or os.getenv("OPENAI_MODEL_MASTER") or os.getenv("OPENAI_MODEL_DEBATE"))
@@ -91,5 +98,5 @@ def multi_debate(
             "Модели не предоставили разногласий — используем базовые доводы по сигналам.",
         ]
     # Feed into arbiter
-    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust)
+    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust, ta)
     return text, flags
