@@ -1,0 +1,87 @@
+{
+  "title": "Affiliate Overview",
+  "uid": "affiliate-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Referred Revenue (by partner)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (partner) (sum_over_time(pipeline_value{name=\"aff_payment_amount\",partner!\"none\"}[$__interval]))",
+          "legendFormat": "{{partner}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Commissions Accrued (by partner)",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (partner) (sum_over_time(pipeline_value{name=\"aff_commission_amount\"}[$__interval]))",
+          "legendFormat": "{{partner}}"
+        }
+      ]
+    },
+    {
+      "type": "gauge",
+      "title": "Conversion (first purchases / ref starts)",
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 6},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [
+        {
+          "expr": "(sum(sum_over_time(pipeline_value{name=\"aff_first_purchase_event\"}[$__range])))/(sum(sum_over_time(pipeline_value{name=\"aff_ref_start_event\"}[$__range])))",
+          "legendFormat": "conversion"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Commission ($__range)",
+      "gridPos": {"x": 6, "y": 8, "w": 6, "h": 6},
+      "targets": [
+        {"expr": "sum(sum_over_time(pipeline_value{name=\"aff_commission_amount\"}[$__range]))"}
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Partners by Commission",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 6},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (partner) (sum_over_time(pipeline_value{name=\"aff_commission_amount\"}[$__range])))",
+          "legendFormat": "{{partner}}"
+        }
+      ],
+      "options": {"showHeader": true}
+    },
+    {
+      "type": "timeseries",
+      "title": "Conversion by Partner (%)",
+      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "100 * (sum by (partner) (sum_over_time(pipeline_value{name=\"aff_first_purchase_event\"}[$__interval])) / sum by (partner) (sum_over_time(pipeline_value{name=\"aff_ref_start_event\"}[$__interval])))",
+          "legendFormat": "{{partner}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Partners by Conversion (%)",
+      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "topk(10, 100 * (sum by (partner) (sum_over_time(pipeline_value{name=\"aff_first_purchase_event\"}[$__range])) / sum by (partner) (sum_over_time(pipeline_value{name=\"aff_ref_start_event\"}[$__range]))))",
+          "legendFormat": "{{partner}}"
+        }
+      ],
+      "options": {"showHeader": true}
+    }
+  ]
+}

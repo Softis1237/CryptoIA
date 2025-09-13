@@ -37,10 +37,11 @@ class IngestFuturesOutput(BaseModel):
 def run(payload: IngestFuturesInput) -> IngestFuturesOutput:
     provider: str = (
         os.getenv("CCXT_FUTURES_PROVIDER")
-        or os.getenv("CCXT_PROVIDER", "binanceusdm")
+        or os.getenv("CCXT_PROVIDER")
         or "binanceusdm"
     )
-    ex = getattr(ccxt, provider)({"enableRateLimit": True})
+    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
+    ex = getattr(ccxt, provider)({"enableRateLimit": True, "timeout": timeout_ms})
     now = datetime.now(timezone.utc)
     ts = int(now.timestamp())
 
@@ -48,29 +49,46 @@ def run(payload: IngestFuturesInput) -> IngestFuturesOutput:
     mark_price: Optional[float] = None
     open_interest: Optional[float] = None
 
-    try:
-        fr = ex.fetch_funding_rate(payload.symbol)
-        funding_rate = (
-            float(fr.get("fundingRate"))
-            if fr and fr.get("fundingRate") is not None
-            else None
-        )
-        mark_price = (
-            float(fr.get("markPrice"))
-            if fr and fr.get("markPrice") is not None
-            else None
-        )
-    except Exception:
-        pass
-    try:
-        oi = ex.fetch_open_interest(payload.symbol)
-        open_interest = (
-            float(oi.get("openInterest"))
-            if oi and oi.get("openInterest") is not None
-            else None
-        )
-    except Exception:
-        pass
+    retries = int(os.getenv("CCXT_RETRIES", "3"))
+    backoff = float(os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
+    import time
+    # funding rate + mark
+    attempt = 0
+    while True:
+        try:
+            fr = ex.fetch_funding_rate(payload.symbol)
+            funding_rate = (
+                float(fr.get("fundingRate"))
+                if fr and fr.get("fundingRate") is not None
+                else None
+            )
+            mark_price = (
+                float(fr.get("markPrice"))
+                if fr and fr.get("markPrice") is not None
+                else None
+            )
+            break
+        except Exception:
+            attempt += 1
+            if attempt > retries:
+                break
+            time.sleep(backoff * attempt)
+    # open interest
+    attempt = 0
+    while True:
+        try:
+            oi = ex.fetch_open_interest(payload.symbol)
+            open_interest = (
+                float(oi.get("openInterest"))
+                if oi and oi.get("openInterest") is not None
+                else None
+            )
+            break
+        except Exception:
+            attempt += 1
+            if attempt > retries:
+                break
+            time.sleep(backoff * attempt)
 
     meta = FuturesMeta(
         ts=ts,

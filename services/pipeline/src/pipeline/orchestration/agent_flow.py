@@ -33,6 +33,8 @@ from ..data.ingest_onchain import IngestOnchainInput
 from ..data.ingest_onchain import run as run_onchain
 from ..data.ingest_orderbook import IngestOrderbookInput
 from ..data.ingest_orderbook import run as run_orderbook
+from ..data.ingest_order_flow import IngestOrderFlowInput
+from ..data.ingest_order_flow import run as run_orderflow
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
 from ..data.ingest_prices_lowtf import IngestPricesLowTFInput
@@ -66,13 +68,16 @@ from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
 from ..reasoning.debate_arbiter import debate
+from ..reasoning.debate_arbiter import multi_debate
 from ..reasoning.explain import explain_short
 from ..regime.predictor_ml import predict as predict_regime_ml
 from ..regime.regime_detect import detect as detect_regime
 from ..reporting.charts import plot_price_with_levels
+from ..infra.db import fetch_user_insights_recent
 from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios
 from ..similarity.similar_past import SimilarPastInput
 from ..similarity.similar_past import run as run_similar
+from ..agents.master import run_master_flow
 from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
@@ -159,6 +164,26 @@ class OrderbookAgent:
             if os.getenv("ENABLE_ORDERBOOK", "0") not in {"1", "true", "True"}:
                 return _ok(self.name, None, meta={"skipped": True})
             out = run_orderbook(IngestOrderbookInput(**payload))
+            return _ok(self.name, out)
+        except Exception as e:  # noqa: BLE001
+            return _fail(self.name, e)
+
+
+class OrderFlowAgent:
+    """Stream recent trades to S3 and compute meta.
+
+    Payload: ``IngestOrderFlowInput``.
+    Env flag ``ENABLE_ORDER_FLOW`` controls execution.
+    """
+
+    name = "order_flow"
+    priority = 26
+
+    def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
+        try:
+            if os.getenv("ENABLE_ORDER_FLOW", "0") not in {"1", "true", "True"}:
+                return _ok(self.name, None, meta={"skipped": True})
+            out = run_orderflow(IngestOrderFlowInput(**payload))
             return _ok(self.name, out)
         except Exception as e:  # noqa: BLE001
             return _fail(self.name, e)
@@ -1414,6 +1439,33 @@ class EventImpactAgent:
             return _fail(self.name, e)
 
 
+class EventStudyAgent:
+    """Analyze historical price reaction to similar events.
+
+    Payload: {event_type: str, k?: int, window_hours?: int}
+    Env flags: none.
+    """
+
+    name = "event_study"
+    priority = 69
+
+    def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
+        try:
+            from ..agents.event_study import EventStudyInput, run as run_event
+
+            ev = EventStudyInput(
+                event_type=str(payload.get("event_type")),
+                k=int(payload.get("k", 10)),
+                window_hours=int(payload.get("window_hours", 24)),
+                symbol=str(payload.get("symbol", "BTC/USDT")),
+                provider=str(payload.get("provider", os.getenv("CCXT_PROVIDER", "binance"))),
+            )
+            out = run_event(ev)
+            return _ok(self.name, out)
+        except Exception as e:  # noqa: BLE001
+            return _fail(self.name, e)
+
+
 class ModelTrustAgent:
     """Suggest model weighting adjustments based on regime and news context.
 
@@ -1488,7 +1540,29 @@ class ModelTrustAgent:
 
             def _gamma(model: str) -> float:
                 sens = any(_fnmatch.fnmatch(model, pat) for pat in patterns)
-                return 1.0 + (k_ctx * news_ctx if sens else 0.0)
+                # Event context boost (optional): if impactful events present
+                evs = payload.get("events") or {}
+                try:
+                    hyp = evs.get("hypothesis") if isinstance(evs, dict) else []
+                    ev_ctx = 0.0
+                    for h in (hyp or [])[:5]:
+                        conf = float(h.get("confidence", 0.0) or 0.0)
+                        ev_ctx = max(ev_ctx, conf)
+                except Exception:
+                    ev_ctx = 0.0
+                return 1.0 + ((k_ctx * news_ctx + 0.3 * ev_ctx) if sens else 0.0)
+
+            def _event_type() -> str | None:
+                try:
+                    evs = payload.get("events") or {}
+                    hyp = evs.get("hypothesis") if isinstance(evs, dict) else []
+                    if hyp:
+                        best = max(hyp, key=lambda h: float((h or {}).get("confidence", 0.0) or 0.0))
+                        et = str(best.get("event", "")).upper()
+                        return "ETF_APPROVAL" if et == "ETF" else ("SEC_ACTION" if et == "REG" else et)
+                except Exception:
+                    return None
+                return None
 
             def suggest(preds, hz: str):
                 # base inverse-smape
@@ -1500,6 +1574,16 @@ class ModelTrustAgent:
                     base[m] = 1.0 / max(1e-3, smape)
                 # apply alpha (regime) and gamma (news)
                 alpha = _alpha_map(hz)
+                # event-specific alpha (if any)
+                alpha_evt = {}
+                try:
+                    et = _event_type()
+                    if et:
+                        from ..infra.db import fetch_model_trust_regime_event as _fmte
+
+                        alpha_evt = _fmte(str(regime), hz, et) or {}
+                except Exception:
+                    alpha_evt = {}
                 hits = sum(
                     1 for m, a in alpha.items() if abs(float(a or 1.0) - 1.0) > 1e-6
                 )
@@ -1522,8 +1606,9 @@ class ModelTrustAgent:
                 w = {}
                 for m, b in base.items():
                     a = float(alpha.get(m, 1.0) or 1.0)
+                    ae = float(alpha_evt.get(m, 1.0) or 1.0)
                     g = _gamma(m)
-                    w[m] = max(0.0, b * a * g)
+                    w[m] = max(0.0, b * a * ae * g)
                 s = sum(w.values()) or 1.0
                 out = {k: float(v / s) for k, v in w.items()}
                 # also record news_ctx once per call
@@ -1565,6 +1650,14 @@ def run_release_flow(
 ) -> Dict[str, AgentResult]:
     init_logging()
     init_sentry()
+    # Delegate to MasterAgent when enabled
+    if os.getenv("USE_MASTER_AGENT", "0") in {"1", "true", "True"}:
+        logger.info("USE_MASTER_AGENT=1 → delegating to MasterAgent.run_master_flow()")
+        try:
+            run_master_flow(slot=slot)
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"MasterAgent execution failed: {e}")
+        return {}
     now = datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
 
@@ -1584,6 +1677,7 @@ def run_release_flow(
     co.register(DeepPricesAgent(), depends_on=[])  # independent deep price snapshot
     co.register(NewsAgent(), depends_on=[])
     co.register(OrderbookAgent(), depends_on=[])
+    co.register(OrderFlowAgent(), depends_on=[])  # optional short window trades
     co.register(OnchainAgent(), depends_on=[])
     co.register(FeaturesAgent(), depends_on=["prices", "news"])  # uses price+news
     co.register(RegimeAgent(), depends_on=["features"])  # uses features
@@ -1608,6 +1702,7 @@ def run_release_flow(
     )  # optional LLM forecast
     co.register(BehaviorAgent(), depends_on=["alt_data"])  # risk appetite from options
     co.register(EventImpactAgent(), depends_on=["news"])  # event impact hypotheses
+    co.register(EventStudyAgent(), depends_on=["news"])  # event study on high-impact facts
     co.register(
         ModelsAgent("models_4h", horizon_minutes=horizon_hours_4h * 60),
         depends_on=["features"],
@@ -1676,6 +1771,13 @@ def run_release_flow(
             "provider": os.getenv("CCXT_PROVIDER", "binance"),
             "depth": int(os.getenv("ORDERBOOK_DEPTH", "50")),
         },
+        "order_flow": {
+            "run_id": ctx.run_id,
+            "slot": ctx.slot,
+            "symbol": "BTCUSDT",
+            "provider": os.getenv("CCXT_PROVIDER", "binance"),
+            "window_sec": int(os.getenv("ORDERFLOW_WINDOW_SEC", "60")),
+        },
         "onchain": {
             "run_id": ctx.run_id,
             "slot": ctx.slot,
@@ -1722,6 +1824,9 @@ def run_release_flow(
     orderbook_out = (
         results.get("orderbook").output if results.get("orderbook") else None
     )
+    orderflow_out = (
+        results.get("order_flow").output if results.get("order_flow") else None
+    )
     onchain_out = results.get("onchain").output if results.get("onchain") else None
     social_out = results.get("social").output if results.get("social") else None
     news_list = (
@@ -1763,6 +1868,7 @@ def run_release_flow(
         "news_signals": news_list,
         "news_facts": news_facts,
         "orderbook_meta": orderbook_meta,
+        "orderflow_path_s3": (getattr(orderflow_out, "trades_path_s3", None) if orderflow_out else None),
         "onchain_signals": onchain_list,
         "social_signals": social_list,
         "macro_flags": macro_flags,
@@ -1784,6 +1890,7 @@ def run_release_flow(
         "chart",
         "trade",
         "risk_policy",
+        "backtest_validator",
     ]:
         durations[name] = 0.0  # initialize
 
@@ -1817,6 +1924,15 @@ def run_release_flow(
         )
     except Exception:
         logger.exception("Failed to upsert regime")
+
+    # backtest validator (simple breakout on features)
+    try:
+        with timed(durations, "backtest_validator"):
+            results["backtest_validator"] = co._agents["backtest_validator"].run({
+                "features_path_s3": getattr(f_out, "features_path_s3", "")
+            })  # type: ignore[attr-defined]
+    except Exception:
+        logger.exception("Failed to run backtest_validator agent")
 
     # similar past
     with timed(durations, "similar_past"):
@@ -1976,6 +2092,7 @@ def run_release_flow(
                 "preds_12h": preds12,
                 "regime": regime,
                 "news_ctx": news_ctx,
+                "events": (results.get("event_impact").output if results.get("event_impact") else None),
             }
         )  # type: ignore[attr-defined]
         upsert_agent_prediction(
@@ -1998,12 +2115,12 @@ def run_release_flow(
         preds_payload_4h = [p.model_dump() for p in getattr(m4, "preds", [])]
         if llm_pred4:
             preds_payload_4h.append(llm_pred4)
-        results["ensemble_4h"] = co._agents["ensemble_4h"].run({"preds": preds_payload_4h, "trust_weights": trust4, "horizon": "4h"})  # type: ignore[attr-defined]
+        results["ensemble_4h"] = co._agents["ensemble_4h"].run({"preds": preds_payload_4h, "trust_weights": trust4, "horizon": "4h", "neighbors": neighbors})  # type: ignore[attr-defined]
     with timed(durations, "ensemble_12h"):
         preds_payload_12h = [p.model_dump() for p in getattr(m12, "preds", [])]
         if llm_pred12:
             preds_payload_12h.append(llm_pred12)
-        results["ensemble_12h"] = co._agents["ensemble_12h"].run({"preds": preds_payload_12h, "trust_weights": trust12, "horizon": "12h"})  # type: ignore[attr-defined]
+        results["ensemble_12h"] = co._agents["ensemble_12h"].run({"preds": preds_payload_12h, "trust_weights": trust12, "horizon": "12h", "neighbors": neighbors})  # type: ignore[attr-defined]
     e4 = results["ensemble_4h"].output
     e12 = results["ensemble_12h"].output
 
@@ -2310,14 +2427,54 @@ def run_release_flow(
         )
     except Exception:
         trust = {}
-    deb_text, risk_flags = debate(
-        rationale_points=getattr(e4, "rationale_points", []),
-        regime=regime["label"],
-        news_top=news_top,
-        neighbors=neighbors,
-        memory=memory,
-        trust=trust,
-    )
+    # Optional Event Study: if we have high-impact facts
+    event_summary_lines: list[str] = []
+    try:
+        types_priority = ["HACK", "ETF_APPROVAL", "SEC_ACTION"]
+        high = []
+        for f in (news_facts or [])[:20]:
+            t = str(f.get("type", "")).upper()
+            sc = float(f.get("magnitude", 0.0) or 0.0) * float(f.get("confidence", 0.0) or 0.0)
+            if t in {"HACK", "ETF_APPROVAL", "SEC_ACTION"} and sc >= 0.5:
+                high.append((t, sc))
+        seen = set()
+        high_sorted = sorted(high, key=lambda x: (types_priority.index(x[0]) if x[0] in types_priority else 99, -x[1]))
+        for t, _ in high_sorted[:2]:
+            if t in seen:
+                continue
+            seen.add(t)
+            res = co._agents["event_study"].run({"event_type": t, "k": 10, "window_hours": 12})  # type: ignore[attr-defined]
+            out = res.output or {}
+            if out and out.get("status") != "no-samples":
+                avg = float(out.get("avg_change", 0.0) or 0.0)
+                n = int(out.get("n", 0) or 0)
+                event_summary_lines.append(f"{t}: среднее изменение за 12ч ≈ {avg*100:.1f}% (n={n})")
+                try:
+                    upsert_agent_prediction(f"event_study_{t}", ctx.run_id, out)
+                except Exception:
+                    pass
+    except Exception:
+        logger.exception("Failed to run event study agent(s)")
+
+    # Debates (multi-agent if enabled)
+    use_multi = os.getenv("ENABLE_MULTI_DEBATE", "1") in {"1", "true", "True"}
+    if use_multi:
+        deb_text, risk_flags = multi_debate(
+            regime=regime["label"],
+            news_top=news_top,
+            neighbors=neighbors,
+            memory=memory,
+            trust=trust,
+        )
+    else:
+        deb_text, risk_flags = debate(
+            rationale_points=getattr(e4, "rationale_points", []),
+            regime=regime["label"],
+            news_top=news_top,
+            neighbors=neighbors,
+            memory=memory,
+            trust=trust,
+        )
     expl_text = explain_short(
         getattr(e4, "y_hat", 0.0),
         getattr(e4, "proba_up", 0.5),
@@ -2427,113 +2584,94 @@ def run_release_flow(
     except Exception:
         logger.exception("Failed to process risk_policy agent")
 
-    # Prepare message (reuse format from monolithic flow)
+    # Prepare concise message for Telegram
     try:
         from ..trading.publish_telegram import (
-            publish_code_block_json,
             publish_message,
             publish_photo_from_s3,
         )
         from ..utils.calibration import calibrate_proba_by_uncertainty
-
-        msg = []
-        msg.append(f"<b>BTC Forecast — {ctx.slot}</b>")
-        msg.append(f"Run: <code>{ctx.run_id}</code>")
-        msg.append("")
-        try:
-            si = results.get("sentiment_index").output or {}
-            liq = results.get("liquidity_analysis").output or {}
-            contra = results.get("contrarian_signal").output or {}
-            msg.append(
-                f"<b>Сентимент</b>: idx={si.get('index', 0):.2f} (news={si.get('news_component', 0):.2f}, social={si.get('social_component', 0):.2f})"
-            )
-            if liq:
-                msg.append(
-                    f"<b>Ликвидность</b>: {liq.get('level', 'n/a')} (24h≈{liq.get('liq_24h_usd', 0):.0f}$, slip≈{liq.get('slip_bps', 0):.1f}bps)"
-                )
-            if contra and contra.get("side") and contra.get("side") != "NONE":
-                msg.append(
-                    f"<b>Контр‑сигнал</b>: {contra.get('side')} (score={contra.get('score',0):.2f})"
-                )
-        except Exception:
-
-            logger.exception("Failed to compose sentiment summary")
-
-            logger.exception("Failed to compose sentiment/liquidity/contrarian section")
-
         from ..models.calibration_runtime import calibrate_proba as _calib
+        from datetime import datetime, timezone
+        try:
+            from zoneinfo import ZoneInfo  # py>=3.9
+        except Exception:
+            ZoneInfo = None  # type: ignore
 
+        # Calibrated probabilities
         e4_raw = float(getattr(e4, "proba_up", 0.5))
         e12_raw = float(getattr(e12, "proba_up", 0.5))
-        # Prefer isotonic if available; fallback to uncertainty calibration
         e4_iso = _calib(e4_raw, "4h")
         e12_iso = _calib(e12_raw, "12h")
-        if e4_iso == e4_raw:
-            e4_proba_cal = calibrate_proba_by_uncertainty(
+        e4_proba_cal = (
+            calibrate_proba_by_uncertainty(
                 e4_raw,
                 getattr(e4, "interval", [0.0, 0.0]),
                 getattr(m4, "last_price", 0.0),
                 getattr(m4, "atr", 0.0),
             )
-        else:
-            e4_proba_cal = e4_iso
-        if e12_iso == e12_raw:
-            e12_proba_cal = calibrate_proba_by_uncertainty(
+            if e4_iso == e4_raw
+            else e4_iso
+        )
+        e12_proba_cal = (
+            calibrate_proba_by_uncertainty(
                 e12_raw,
                 getattr(e12, "interval", [0.0, 0.0]),
                 getattr(m4, "last_price", 0.0),
                 getattr(m4, "atr", 0.0),
             )
-        else:
-            e12_proba_cal = e12_iso
-        msg.append(
-            f"<b>4h</b>: ŷ={getattr(e4, 'y_hat', 0.0):.2f} (p_up={e4_proba_cal:.2f} cal, interval=({getattr(e4, 'interval', [0,0])[0]:.2f}..{getattr(e4, 'interval', [0,0])[1]:.2f}))"
+            if e12_iso == e12_raw
+            else e12_iso
         )
-        msg.append(
-            f"<b>12h</b>: ŷ={getattr(e12, 'y_hat', 0.0):.2f} (p_up={e12_proba_cal:.2f} cal, interval=({getattr(e12, 'interval', [0,0])[0]:.2f}..{getattr(e12, 'interval', [0,0])[1]:.2f}))"
-        )
-        msg.append("")
-        msg.append(
-            f"<b>Режим рынка</b>: {regime['label']} (conf={float(regime['confidence']):.2f}, vol≈{regime.get('features', {}).get('vol_pct', 0.0):.2f}%)"
-        )
-        msg.append("<b>Почему так (кратко)</b>:\n" + expl_text)
-        msg.append("")
-        msg.append("<b>Арбитраж аргументов</b>:\n" + deb_text)
-        msg.append("")
-        news_n = 0
-        try:
-            news_n = min(5, len(news_out.news_signals)) if news_out else 0
-        except Exception:
-            news_n = 0
-        if news_n:
-            msg.append("<b>Топ новости:</b>")
-            for s in news_out.news_signals[:news_n]:
-                if getattr(s, "url", None):
-                    line = f"• [{s.sentiment} · {getattr(s, 'impact_score', 0)}] <a href=\"{s.url}\">{s.title}</a> ({s.source})"
-                else:
-                    line = f"• [{s.sentiment} · {getattr(s, 'impact_score', 0)}] {s.title} ({s.source})"
-                msg.append(line)
-        else:
-            msg.append("Новостей за период мало или ключи API не заданы.")
 
-        msg.append("")
-        msg.append("<b>Сценарии (5 веток):</b>")
-        for sc in sc_pack.get("scenarios", [])[:5]:
-            msg.append(
-                f"• {sc['if_level']}: {sc['then_path']} (p={sc['prob']:.2f}); inv: {sc['invalidation']}"
-            )
-        msg.append("")
-        if card.get("side") == "NO-TRADE" or not ok:
-            msg.append("<b>Сделка</b>: NO-TRADE (" + (reason or "policy") + ")")
-        else:
-            msg.append(
-                "<b>Сделка</b>: "
-                f"{card['side']} x{card['leverage']} entry≈{card['entry']['zone'][0]:.2f} SL={card['stop_loss']:.2f} TP={card['take_profit']:.2f} R:R={card.get('rr_expected', 0.0):.2f}"
-            )
-        msg.append("")
+        # Sentiment / risk quick factors
+        si = results.get("sentiment_index").output or {}
+        riskm = results.get("risk_estimator").output or {}
+        var95 = float(riskm.get("VaR95", 0.0) or 0.0)
+        risk_level = "low" if var95 < 0.01 else ("medium" if var95 < 0.02 else "high")
+
+        # Next update (local TZ)
+        def _next_update_label(tz_name: str = os.getenv("TIMEZONE", "Europe/Moscow")) -> str:
+            try:
+                tz = ZoneInfo(tz_name) if ZoneInfo else timezone.utc
+            except Exception:
+                tz = timezone.utc
+            now = datetime.now(timezone.utc).astimezone(tz)
+            h = now.hour
+            target_h = 12 if h < 12 else 24
+            next_dt = now.replace(hour=0 if target_h == 24 else 12, minute=0, second=0, microsecond=0)
+            if next_dt <= now:
+                # move to next slot
+                add_h = 12 if h < 12 else (24 - h)
+                next_dt = (now + timedelta(hours=add_h)).replace(minute=0, second=0, microsecond=0)
+            return next_dt.strftime("%d.%m %H:%M %Z")
+
+        # Scenario brief
+        sc_list = (sc_pack.get("scenarios", []) if isinstance(sc_pack, dict) else []) or []
+        sc_line = "n/a"
+        if sc_list:
+            sc = sc_list[0]
+            try:
+                sc_line = f"{sc.get('if_level', '')} → {sc.get('then_path', '')} (p={float(sc.get('prob', 0.0)):.2f})"
+            except Exception:
+                sc_line = "n/a"
+
+        # Price ranges
+        i4 = getattr(e4, "interval", [0.0, 0.0])
+        i12 = getattr(e12, "interval", [0.0, 0.0])
+
+        msg = []
+        msg.append(f"<b>BTC Forecast — {ctx.slot}</b>")
+        msg.append(f"Run: <code>{ctx.run_id}</code>")
         msg.append(
-            "<i>Отказ от ответственности: это не инвестсовет. Решения о сделках вы принимаете самостоятельно, учитывая риски.</i>"
+            f"Price ranges: 4h=({i4[0]:.2f}..{i4[1]:.2f}), 12h=({i12[0]:.2f}..{i12[1]:.2f})"
         )
+        msg.append(f"Scenario: {sc_line}")
+        msg.append(f"P(up): 4h={e4_proba_cal:.2f}, 12h={e12_proba_cal:.2f}")
+        msg.append(
+            f"Factors: news_idx={float(si.get('index', 0.0)):.2f}; risk={risk_level} (VaR95≈{var95:.3f})"
+        )
+        msg.append(f"Next update: {_next_update_label()}")
 
         # publish
         try:
@@ -2543,7 +2681,6 @@ def run_release_flow(
                     risk_chart_s3, caption=f"BTC {ctx.slot}: риск‑диаграммы"
                 )
             publish_message("\n".join(msg))
-            publish_code_block_json("Карточка сделки (JSON)", card)
         except Exception:
             logger.exception("Failed to publish forecast message")
     except Exception:
@@ -2629,6 +2766,7 @@ def run_release_flow(
             f"Опционы: PC={be.get('put_call_ratio','n/a')} OI≈{be.get('open_interest','n/a')} риск={be.get('risk_appetite','n/a')}\n"
             f"Риск-метрики: VaR95≈{riskm.get('VaR95','n/a')}, ES95≈{riskm.get('ES95','n/a')}, maxDD≈{riskm.get('max_drawdown','n/a')}"
             + (f"\nRisk chart: {risk_chart_s3}" if risk_chart_s3 else "")
+            + ("\n\n<b>Event Study</b>\n" + "\n".join(event_summary_lines) if event_summary_lines else "")
         )
         upsert_explanations(ctx.run_id, md, risk_flags)
         upsert_trade_suggestion(ctx.run_id, card)
@@ -2748,6 +2886,30 @@ def run_release_flow(
     except Exception:
         logger.exception("Failed to push business metrics")
 
+    # Persist compact run summary for agent memory (best-effort)
+    try:
+        from ..infra.db import insert_run_summary as _ins_rs
+
+        final_summary = {
+            "slot": ctx.slot,
+            "regime": str(regime.get("label")) if isinstance(regime, dict) else str(getattr(regime, "label", "")),
+            "regime_conf": float((regime.get("confidence") if isinstance(regime, dict) else getattr(regime, "confidence", 0.0)) or 0.0),
+            "e4": {
+                "y_hat": float(getattr(e4, "y_hat", 0.0)),
+                "proba_up": float(getattr(e4, "proba_up", 0.0)),
+                "interval": list(getattr(e4, "interval", [0.0, 0.0])),
+            },
+            "e12": {
+                "y_hat": float(getattr(e12, "y_hat", 0.0)),
+                "proba_up": float(getattr(e12, "proba_up", 0.0)),
+                "interval": list(getattr(e12, "interval", [0.0, 0.0])),
+            },
+            "risk_flags": risk_flags if isinstance(risk_flags, list) else [],
+        }
+        _ins_rs(ctx.run_id, final_summary, None)
+    except Exception:
+        logger.exception("Failed to insert run summary")
+
     return results
 
 
@@ -2764,3 +2926,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Merge validated user insights into news_list as additional signals
+    try:
+        ui = fetch_user_insights_recent(
+            hours=int(os.getenv("INSIGHTS_WINDOW_H", "24")),
+            min_truth=float(os.getenv("INSIGHTS_MIN_TRUTH", "0.6")),
+            min_freshness=float(os.getenv("INSIGHTS_MIN_FRESH", "0.5")),
+            limit=int(os.getenv("INSIGHTS_MAX", "30")),
+        )
+        for it in ui:
+            # Heuristic sentiment
+            title = (it.get("text") or "").strip()
+            tl = title.lower()
+            if any(w in tl for w in ["bull", "pump", "up", "рост", "памп"]):
+                sentiment = "positive"
+            elif any(w in tl for w in ["bear", "dump", "down", "пад", "крах", "hack", "exploit"]):
+                sentiment = "negative"
+            else:
+                sentiment = "neutral"
+            w = min(float(it.get("score_truth", 0.0)), float(it.get("score_freshness", 0.0)))
+            impact = 0.3 + 0.7 * max(0.0, min(1.0, w))
+            ts = int((it.get("created_at") or datetime.now(timezone.utc)).timestamp())
+            news_list.append(
+                {
+                    "ts": ts,
+                    "title": title[:240],
+                    "url": it.get("url") or "",
+                    "source": "user_insight",
+                    "sentiment": sentiment,
+                    "impact_score": impact,
+                }
+            )
+    except Exception:
+        logger.warning("Failed to merge user insights; continuing")

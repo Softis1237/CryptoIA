@@ -84,14 +84,31 @@ def run(payload: IngestPricesLowTFInput) -> IngestPricesLowTFOutput:
     import pyarrow as pa  # type: ignore[import-not-found]
     import pyarrow.parquet as pq  # type: ignore[import-not-found]
 
-    provider = os.getenv("CCXT_PROVIDER", "binance")
-    exchange = getattr(ccxt, provider)({"enableRateLimit": True})
+    provider = os.getenv("CCXT_EXCHANGE", os.getenv("CCXT_PROVIDER", "binance"))
+    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
+    exchange = getattr(ccxt, provider)({"enableRateLimit": True, "timeout": timeout_ms})
     timeframe = f"{payload.timeframe_seconds}s"
     start_ms = payload.start_ts * 1000
     end_ms = payload.end_ts * 1000
     step_ms = payload.timeframe_seconds * 1000
 
-    ohlcv = _fetch_ohlcv(exchange, payload.symbol, timeframe, start_ms, end_ms, step_ms)
+    # Basic retry loop for resilience
+    retries = int(os.getenv("CCXT_RETRIES", "3"))
+    backoff = float(os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
+    import time
+    attempt = 0
+    while True:
+        try:
+            ohlcv = _fetch_ohlcv(
+                exchange, payload.symbol, timeframe, start_ms, end_ms, step_ms
+            )
+            break
+        except Exception as e:  # noqa: BLE001
+            attempt += 1
+            if attempt > retries:
+                raise
+            logger.warning(f"retrying fetch_ohlcv after error: {e}")
+            time.sleep(backoff * attempt)
 
     if ohlcv:
         df = pd.DataFrame(
@@ -102,9 +119,24 @@ def run(payload: IngestPricesLowTFInput) -> IngestPricesLowTFOutput:
         df = df[["ts", "open", "high", "low", "close", "volume"]]
     else:
         logger.info("No OHLCV returned, aggregating from trades")
-        df = _aggregate_from_trades(
-            exchange, payload.symbol, payload.timeframe_seconds, start_ms, end_ms
-        )
+        # Retry aggregation from trades as well
+        attempt = 0
+        while True:
+            try:
+                df = _aggregate_from_trades(
+                    exchange,
+                    payload.symbol,
+                    payload.timeframe_seconds,
+                    start_ms,
+                    end_ms,
+                )
+                break
+            except Exception as e:  # noqa: BLE001
+                attempt += 1
+                if attempt > retries:
+                    raise
+                logger.warning(f"retrying aggregate_from_trades after error: {e}")
+                time.sleep(backoff * attempt)
 
     df = df.sort_values("ts").reset_index(drop=True)
 

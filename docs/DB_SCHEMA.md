@@ -21,6 +21,10 @@
 - model_registry — версии моделей с параметрами/метриками/путями
 - users_feedback — обратная связь пользователей
 - users — предпочтения пользователей/таймзона/активы
+- affiliates — партнёры (user_id, code, percent, balance)
+- referrals — рефералы/начисления по первым покупкам (partner_user_id, referred_user_id, charge_id, amount, commission)
+- users.referrer_code / users.referrer_name — код и имя партнёра, от которого пришёл пользователь
+- affiliate_requests — заявки на партнёрку (user_id, username, note, status, created_at, processed_at)
 - redeem_codes — коды подписки на N месяцев
 
 См. папку `migrations/` для SQL определения и индексов.

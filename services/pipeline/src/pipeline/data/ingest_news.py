@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import pyarrow as pa
@@ -13,8 +13,16 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from ..infra.s3 import upload_bytes
+from ..infra.metrics import push_values
 from ..reasoning.llm import call_flowise_json
 from ..reasoning.news_facts import extract_news_facts_batch
+import asyncio
+import feedparser  # type: ignore[import-untyped]
+
+try:
+    import aiohttp  # type: ignore[import-untyped]
+except Exception:  # pragma: no cover - optional import; requirements should include aiohttp
+    aiohttp = None  # type: ignore[assignment]
 
 
 class NewsSignal(BaseModel):
@@ -161,6 +169,168 @@ def _fetch_from_newsapi(
     return items
 
 
+def _parse_dt_safe(val: Any) -> Optional[datetime]:
+    try:
+        return pd.to_datetime(val, utc=True).to_pydatetime()
+    except Exception:
+        return None
+
+
+def _rss_default_sources() -> List[str]:
+    """Build the list of RSS sources.
+
+    Priority:
+    1) Built-in compact defaults (major crypto outlets)
+    2) Optional additions from env `RSS_NEWS_SOURCES` (comma/space/newline sep)
+    3) Optional file list from `RSS_SOURCES_FILE` (one URL per line)
+       If not set, we also look for a bundled `rss_sources_full.txt` next to this module.
+    """
+    from pathlib import Path
+
+    # Compact, high-signal default list; can be extended via env/file
+    defaults: List[str] = [
+        os.getenv(
+            "COINDESK_RSS_URL",
+            "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
+        ),
+        os.getenv("COINTELEGRAPH_RSS_URL", "https://cointelegraph.com/rss"),
+        "https://bitcoinmagazine.com/.rss/full/",
+        "https://cryptoslate.com/feed/",
+        "https://www.blockworks.co/feed",
+        "https://news.bitcoin.com/feed/",
+        "https://decrypt.co/feed",
+        "https://www.theblock.co/rss.xml",
+        "https://ambcrypto.com/feed/",
+        "https://www.newsbtc.com/feed/",
+    ]
+
+    # 2) Allow override/extra via RSS_NEWS_SOURCES (comma/newline/space separated)
+    extra_raw = os.getenv("RSS_NEWS_SOURCES", "").strip()
+    if extra_raw:
+        parts = [p.strip() for p in extra_raw.replace("\n", ",").replace(" ", ",").split(",")]
+        defaults.extend([p for p in parts if p])
+
+    # 3) Optional file: explicit path via env, else bundled full list
+    urls_from_file: List[str] = []
+    file_hint = os.getenv("RSS_SOURCES_FILE", "").strip()
+    candidate_files: List[Path] = []
+    if file_hint:
+        candidate_files.append(Path(file_hint))
+    # bundled full list near this file
+    bundled = Path(__file__).with_name("rss_sources_full.txt")
+    if bundled.exists():
+        candidate_files.append(bundled)
+    for f in candidate_files:
+        try:
+            if f.exists():
+                with f.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        urls_from_file.append(line)
+        except Exception:
+            # ignore file errors; proceed with defaults
+            pass
+    defaults.extend(urls_from_file)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    out: List[str] = []
+    for u in defaults:
+        if u and u not in seen:
+            out.append(u)
+            seen.add(u)
+    return out
+
+
+async def _fetch_one_rss(session: "aiohttp.ClientSession", url: str, timeout_sec: float) -> Tuple[str, Optional[str]]:
+    try:
+        async with session.get(url, timeout=timeout_sec) as resp:
+            if resp.status != 200:
+                return url, None
+            return url, await resp.text()
+    except Exception:
+        return url, None
+
+
+async def _fetch_rss_async(sources: List[str]) -> Dict[str, Optional[str]]:
+    # timeout per request
+    timeout_sec = float(os.getenv("RSS_TIMEOUT_SEC", "10"))
+    # concurrency cap
+    limit = int(os.getenv("RSS_CONCURRENCY", "8"))
+    if aiohttp is None:
+        logger.warning("aiohttp not available, RSS ingestion disabled")
+        return {}
+    connector = aiohttp.TCPConnector(limit_per_host=limit)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [_fetch_one_rss(session, u, timeout_sec) for u in sources]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        return {u: body for (u, body) in results}
+
+
+def _fetch_from_rss_window(start: datetime) -> Tuple[List[dict], Dict[str, float]]:
+    sources = _rss_default_sources()
+    if not sources:
+        return [], {"rss_total": 0.0, "rss_ok": 0.0, "rss_fail": 0.0}
+    logger.info(f"Fetching news via RSS from {len(sources)} sources (fallback)...")
+    try:
+        bodies = asyncio.run(_fetch_rss_async(sources))
+    except RuntimeError:
+        # In case we're already in an event loop (rare in this context)
+        logger.warning("Async loop detected; creating nested loop for RSS fetch")
+        bodies = asyncio.get_event_loop().run_until_complete(_fetch_rss_async(sources))  # type: ignore[call-arg]
+
+    items: List[dict] = []
+    seen_urls: set[str] = set()
+    start_ts = int(start.timestamp())
+    rss_total = float(len(sources))
+    rss_ok = float(sum(1 for b in bodies.values() if b))
+    rss_fail = float(rss_total - rss_ok)
+    for src_url, body in bodies.items():
+        if not body:
+            continue
+        parsed = feedparser.parse(body)
+        feed_title = (parsed.feed.get("title") if getattr(parsed, "feed", None) else None) or src_url
+        for e in parsed.entries or []:
+            url = getattr(e, "link", None) or getattr(e, "id", None) or ""
+            if not url or url in seen_urls:
+                continue
+            # determine best-effort published/updated time
+            ts_dt: Optional[datetime] = None
+            if getattr(e, "published", None):
+                ts_dt = _parse_dt_safe(getattr(e, "published"))
+            if ts_dt is None and getattr(e, "updated", None):
+                ts_dt = _parse_dt_safe(getattr(e, "updated"))
+            if ts_dt is None and getattr(e, "published_parsed", None):
+                try:
+                    ts_dt = datetime(*e.published_parsed[:6], tzinfo=timezone.utc)
+                except Exception:
+                    ts_dt = None
+            if ts_dt is None and getattr(e, "updated_parsed", None):
+                try:
+                    ts_dt = datetime(*e.updated_parsed[:6], tzinfo=timezone.utc)
+                except Exception:
+                    ts_dt = None
+            if ts_dt is None:
+                ts_dt = datetime.now(timezone.utc)
+            ts_int = int(ts_dt.timestamp())
+            if ts_int < start_ts:
+                continue
+            title = (getattr(e, "title", None) or "").strip()
+            items.append({
+                "ts": ts_int,
+                "title": title,
+                "url": url,
+                "source": feed_title,
+            })
+            seen_urls.add(url)
+    # Sort desc by ts for consistency
+    items.sort(key=lambda x: x.get("ts", 0), reverse=True)
+    logger.info(f"Fetched {len(items)} RSS news items after dedup.")
+    return items, {"rss_total": rss_total, "rss_ok": rss_ok, "rss_fail": rss_fail}
+
+
 def run(inp: IngestNewsInput) -> IngestNewsOutput:
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=inp.time_window_hours)
@@ -168,6 +338,7 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
     newsapi_key = os.getenv("NEWSAPI_KEY") or os.getenv("NEWSAPI_API_KEY")
 
     rows: List[dict] = []
+    rss_stats: Dict[str, float] = {}
     try:
         if cryptopanic_key:
             logger.info("Fetching news from CryptoPanic...")
@@ -176,7 +347,10 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
             logger.info("Fetching news from NewsAPI...")
             rows = _fetch_from_newsapi(start, now, newsapi_key, inp.query)
         else:
-            logger.warning("No news API key provided, cannot ingest news.")
+            # Free fallback: RSS feeds
+            rows, rss_stats = _fetch_from_rss_window(start)
+            if not rows:
+                logger.warning("No news API key and RSS fallback returned no items.")
     except Exception as e:  # noqa: BLE001
         logger.error(f"fetch news failed: {e}")
         rows = []
@@ -231,6 +405,14 @@ def run(inp: IngestNewsInput) -> IngestNewsOutput:
         )
 
     logger.info(f"Generated {len(signals)} news signals.")
+    # Push basic observability values if configured
+    try:
+        values = {"news_count": float(len(signals))}
+        # enrich with RSS fetch stats when available
+        values.update(rss_stats)
+        push_values(job="ingest_news", values=values, labels={"slot": inp.slot})
+    except Exception:
+        pass
 
     # Fact extraction remains the same, it uses the generated signals
     logger.info("Extracting news facts...")

@@ -20,6 +20,7 @@ class FeaturesCalcInput(BaseModel):
     news_facts: List[dict] = Field(default_factory=list)
     # Optional enrichments
     orderbook_meta: Optional[Dict[str, Any]] = None
+    orderflow_path_s3: Optional[str] = None
     onchain_signals: List[dict] = Field(default_factory=list)
     social_signals: List[dict] = Field(default_factory=list)
     regime_hint: Optional[str] = None  # if known from previous run
@@ -525,6 +526,27 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     except Exception:
         df["news_ctx_score"] = 0.0
 
+    # Order flow enrichment (optional): ofi/delta/throughput from last trades window
+    try:
+        if payload.orderflow_path_s3:
+            from .features_order_flow import latest_metrics as _of_latest
+
+            _of = _of_latest(payload.orderflow_path_s3)
+            df["ofi_1m"] = float(_of.get("ofi_1m", 0.0) or 0.0)
+            df["delta_vol_1m"] = float(_of.get("delta_vol_1m", 0.0) or 0.0)
+            df["trades_per_sec"] = float(_of.get("trades_per_sec", 0.0) or 0.0)
+            df["avg_trade_size"] = float(_of.get("avg_trade_size", 0.0) or 0.0)
+        else:
+            df["ofi_1m"] = 0.0
+            df["delta_vol_1m"] = 0.0
+            df["trades_per_sec"] = 0.0
+            df["avg_trade_size"] = 0.0
+    except Exception:
+        df["ofi_1m"] = 0.0
+        df["delta_vol_1m"] = 0.0
+        df["trades_per_sec"] = 0.0
+        df["avg_trade_size"] = 0.0
+
     # Optional Kats enrichment (cp/anomaly/seasonality)
     df, kats_meta = enrich_with_kats(df)
     # Optional CPD fallback (simple) if Kats off or additionally requested
@@ -606,6 +628,11 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         "regime_crash",
         "regime_healthy_rise",
         "macro_flags_cnt",
+        # order flow metrics (if present)
+        "ofi_1m",
+        "delta_vol_1m",
+        "trades_per_sec",
+        "avg_trade_size",
         # Kats flags (if present)
         *(["cp_flag"] if "cp_flag" in df.columns else []),
         *(["anomaly_flag"] if "anomaly_flag" in df.columns else []),

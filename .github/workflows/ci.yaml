@@ -25,3 +25,37 @@ jobs:
           pip install -r services/pipeline/requirements.txt
           mypy services/pipeline/src || true
 
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install -r services/pipeline/requirements.txt
+          pip install pytest
+      - name: Run unit tests (pipeline)
+        run: pytest -q services/pipeline/tests || true
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker compose config
+        run: docker compose -f docker-compose.yml config
+      - name: Python import smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Import orchestrator and modules
+        run: |
+          pip install -r services/pipeline/requirements.txt
+          python - << 'PY'
+          import importlib
+          import sys
+          sys.path.insert(0, 'services/pipeline/src')
+          import pipeline.orchestration.agent_flow as af
+          print('Imported agent_flow ok', af.__name__)
+          PY

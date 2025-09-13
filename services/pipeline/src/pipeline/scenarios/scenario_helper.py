@@ -40,16 +40,16 @@ def run_llm_or_fallback(
         facts = {}
 
     sys = (
-        "Ты помощник по сценариям BTC. Сформируй 5 веток (grounded-only), строго JSON: "
+        "You are a BTC scenarios assistant. Produce 5 branches (grounded-only) strictly in JSON: "
         '{"scenarios":[{"if_level":string,"then_path":string,"prob":number,"invalidation":string}],"levels":[number,...]}.\n'
-        "Правила: вероятности суммарно ≈1; не противоречь риск‑политике (SL/TP/плечо ≤25x); не придумывай числа — используй близкие уровни к текущей цене и ATR‑масштаб."
+        "Rules: probabilities should sum to ≈1; respect risk policy (SL/TP/leverage ≤25x); do not invent numbers — use levels near current price and an ATR-based scale."
     )
     oc = onchain_context or {}
     mf = macro_flags or []
     usr = (
         f"slot={slot}; price={current_price:.2f}; atr={atr:.2f}.\n"
         f"facts={facts}.\n"
-        f"onchain={oc}. macro_flags={mf}. events={event_hypotheses or []}. Сформулируй 5 коротких веток с вероятностями и инвалидацией, опираясь только на facts/ончейн/макро/события."
+        f"onchain={oc}. macro_flags={mf}. events={event_hypotheses or []}. Formulate 5 concise branches with probabilities and invalidation, grounded only in facts/on-chain/macro/events."
     )
     raw = call_flowise_json("FLOWISE_SCENARIO_URL", {"system": sys, "user": usr})
     if not raw or raw.get("status") == "error":

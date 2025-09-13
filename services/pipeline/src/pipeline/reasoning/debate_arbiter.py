@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+import os
 
 from .llm import call_flowise_json, call_openai_json
 from .schemas import DebateResponse
@@ -15,22 +16,23 @@ def debate(
     trust: Optional[Dict[str, float]] = None,
 ) -> tuple[str, List[str]]:
     sys = (
-        "Ты арбитр: сведи аргументы в 3–6 пунктов (grounded-only).\n"
-        'Верни JSON строго {"bullets":[string,...],"risk_flags":[string,...]} без лишних полей.\n'
-        "Основывайся только на аргументах моделей, режиме, топ‑новостях и похожих окнах; не придумывай чисел.\n"
-        "Если есть память прошлых релизов — учитывай её как контекст; если есть веса доверия к агентам — учитывай их при приоритизации аргументов."
+        "You are an arbiter: distill the arguments into 3–6 grounded bullet points.\n"
+        'Return JSON exactly as {"bullets":[string,...],"risk_flags":[string,...]} with no extra fields.\n'
+        "Base only on model arguments, regime, top news and similar windows; do not invent numbers.\n"
+        "If memory of previous releases is provided — consider it as context; if trust weights are provided — use them to prioritize arguments."
     )
     usr = (
-        f"Аргументы моделей: {rationale_points}\n"
-        f"Режим: {regime}\n"
-        f"Новости: {news_top}\n"
-        f"Похожие окна: {neighbors}\n"
-        f"Память: {memory or []}\n"
-        f"Доверие: {trust or {}}"
+        f"Model arguments: {rationale_points}\n"
+        f"Regime: {regime}\n"
+        f"Top news: {news_top}\n"
+        f"Similar windows: {neighbors}\n"
+        f"Memory: {memory or []}\n"
+        f"Trust: {trust or {}}"
     )
     raw = call_flowise_json("FLOWISE_DEBATE_URL", {"system": sys, "user": usr})
     if not raw or raw.get("status") == "error":
-        raw = call_openai_json(sys, usr)
+        # Prefer dedicated debate model if provided
+        raw = call_openai_json(sys, usr, model=os.getenv("OPENAI_MODEL_DEBATE"))
     data = None
     try:
         if raw and raw.get("status") != "error":
@@ -38,9 +40,56 @@ def debate(
     except Exception:
         data = None
     if not data:
-        # Fallback: лаконично переформулируем rationale_points
-        bullets = [p for p in rationale_points][:4] or ["Сигналы моделей нейтральны."]
+        # Fallback: concise rephrase of rationale_points
+        bullets = [p for p in rationale_points][:4] or ["Model signals are neutral."]
         return "\n".join(f"• {b}" for b in bullets), []
     bullets = [str(b) for b in data.bullets][:6]
     flags = [str(r) for r in data.risk_flags][:6]
     return "\n".join(f"• {b}" for b in bullets), flags
+
+
+def multi_debate(
+    regime: Optional[str],
+    news_top: List[str],
+    neighbors: Optional[List[dict]] = None,
+    memory: Optional[List[str]] = None,
+    trust: Optional[Dict[str, float]] = None,
+    model_bull: Optional[str] = None,
+    model_bear: Optional[str] = None,
+    model_quant: Optional[str] = None,
+) -> tuple[str, List[str]]:
+    """Run a lightweight multi-persona debate and aggregate with the arbiter.
+
+    Returns (markdown_bullets, risk_flags).
+    """
+    bull_sys = (
+        "Ты бычий аналитик. Найди убедительные аргументы за рост цены. "
+        "Думай последовательно, но в ответе верни только JSON {\"bullets\":[...]}"
+    )
+    bear_sys = (
+        "Ты медвежий аналитик. Найди сильные аргументы за падение цены. "
+        "Думай последовательно, но в ответе верни только JSON {\"bullets\":[...]}"
+    )
+    quant_sys = (
+        "Ты квант. Игнорируй эмоции, сосредоточься на цифрах и волатильности. "
+        "Верни только JSON {\"bullets\":[...]}"
+    )
+    ctx = (
+        f"Regime: {regime}\nTop news: {news_top}\nSimilar windows: {neighbors}\nMemory: {memory}\nTrust: {trust}"
+    )
+    out_bull = call_openai_json(bull_sys, ctx, model=model_bull or os.getenv("OPENAI_MODEL_MASTER") or os.getenv("OPENAI_MODEL_DEBATE"))
+    out_bear = call_openai_json(bear_sys, ctx, model=model_bear or os.getenv("OPENAI_MODEL_MASTER") or os.getenv("OPENAI_MODEL_DEBATE"))
+    out_quant = call_openai_json(quant_sys, ctx, model=model_quant or os.getenv("OPENAI_MODEL_MASTER") or os.getenv("OPENAI_MODEL_DEBATE"))
+    bullets_all = []
+    for raw in [out_bull, out_bear, out_quant]:
+        try:
+            bullets_all.extend([str(b) for b in (raw.get("bullets") or raw.get("points") or [])])
+        except Exception:
+            continue
+    if not bullets_all:
+        bullets_all = [
+            "Модели не предоставили разногласий — используем базовые доводы по сигналам.",
+        ]
+    # Feed into arbiter
+    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust)
+    return text, flags

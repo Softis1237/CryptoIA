@@ -14,13 +14,42 @@ TIMEZONE — таймзона слотов. По умолчанию Asia/Jerusa
 
 2. Источники данных и toggles
 
-CRYPTOPANIC_TOKEN, NEWSAPI_KEY — токены для агрегаторов новостей CryptoPanic и NewsAPI.
+CRYPTOPANIC_TOKEN, NEWSAPI_KEY — токены для агрегаторов новостей CryptoPanic и NewsAPI.
 
-ENABLE_ORDERBOOK (0/1) — загрузка стакана (orderbook). Требует Binance/Bybit/etc через ccxt.
+RSS_NEWS_SOURCES — необязательный список RSS‑лент (через запятую/пробел/перенос строки). Если платные ключи не заданы, новости подтягиваются из RSS (CoinDesk, Cointelegraph, Bitcoin Magazine и др.) через aiohttp+feedparser. Можно также переопределить COINDESK_RSS_URL/COINTELEGRAPH_RSS_URL.
 
-ENABLE_ONCHAIN, GLASSNODE_API_KEY, CRYPTOQUANT_API_KEY — включение ончейн‑метрик и соответствующие ключи.
+RSS_SOURCES_FILE — путь к файлу со списком RSS‑источников (по одному URL в строке). Если не задан, используется встроенный список `pipeline/data/rss_sources_full.txt` (при наличии).
 
-ENABLE_FUTURES, FUTURES_PROVIDER — сбор funding rate, mark price и open interest (default binance).
+RSS_TIMEOUT_SEC — таймаут загрузки одной RSS‑ленты (по умолчанию 10 с).
+
+RSS_CONCURRENCY — ограничение одновременных запросов RSS (по умолчанию 8).
+
+Аккаунты и ключи (где взять)
+
+- Telegram Bot Token — @BotFather → /newbot → токен; если токен скомпрометирован или отклоняется, сделайте /revoke и /token (новый токен).
+- OpenAI API Key — https://platform.openai.com → Create API key → OPENAI_API_KEY в .env.
+- Dune API Key — https://dune.com → профиль → API Keys → DUNE_API_KEY. Создайте/найдите публичные SQL‑запросы и укажите их ID в переменных DUNE_QUERY_*.
+- CryptoPanic / NewsAPI — по желанию. Без них новости берутся из RSS (уже настроено).
+- Flowise — работает локально (docker), UI доступен на http://localhost:3002 (если проброшен порт). Для каждого сценария создайте Chatflow и укажите его endpoint в .env.
+
+INSIGHTS_WINDOW_H — окно для учёта пользовательских инсайтов в новостях (по умолчанию 24ч).
+INSIGHTS_MIN_TRUTH — порог оценки правдивости для учёта инсайта (0..1, по умолчанию 0.6).
+INSIGHTS_MIN_FRESH — порог актуальности для учёта инсайта (0..1, по умолчанию 0.5).
+INSIGHTS_MAX — максимум инсайтов, добавляемых в один запуск (по умолчанию 30).
+
+ENABLE_ORDERBOOK (0/1) — загрузка стакана (orderbook). Требует Binance/Bybit/etc через ccxt.
+
+ENABLE_ONCHAIN, DUNE_API_KEY — включение ончейн‑метрик и ключ Dune. Если ключа нет, рекомендуем оставить ENABLE_ONCHAIN=0, чтобы не показывать «on‑chain: 0 сигналов».
+
+Переменные DUNE_QUERY_* — ID запросов для метрик: ACTIVE_ADDRESSES, EXCHANGES_NETFLOW_SUM, MVRV_Z_SCORE, SOPR, MINERS_BALANCE_SUM, TRANSFERS_VOLUME_SUM.
+
+ENABLE_FUTURES, FUTURES_PROVIDER — сбор funding rate, mark price и open interest (default binance).
+
+CCXT_EXCHANGE — имя биржи в ccxt для цен и стакана (по умолчанию binance). Альтернативно поддерживается CCXT_PROVIDER. Дополнительно:
+
+- CCXT_TIMEOUT_MS — таймаут запросов ccxt (по умолчанию 20000 мс)
+- CCXT_RETRIES — число ретраев на сетевые ошибки (по умолчанию 3)
+- CCXT_RETRY_BACKOFF_SEC — базовый бэкофф между ретраями (по умолчанию 1.0с)
 
 ENABLE_SOCIAL, SOCIAL_QUERY, SOCIAL_SUBREDDITS, SOCIAL_MAX_ITEMS, TWITTER_BEARER_TOKEN, REDDIT_USER_AGENT — загрузка твитов/реддита, фильтры и лимиты.
 
@@ -50,7 +79,7 @@ ALT_SECURITY_RSS, ALT_REGULATORY_RSS — RSS‑ленты для монитор
 
 OPENAI_API_KEY, OPENAI_MODEL — ключ и модель для OpenAI (по умолчанию gpt-4o-mini). Без ключа вызовы LLM пропускаются.
 
-LLM_MAX_TOKENS — максимальное количество токенов в ответе (400 по умолчанию).
+LLM_MAX_TOKENS — максимальное количество токенов в ответе (4096 по умолчанию — достаточно «пространства для мысли» без принудительного длинного ответа).
 
 ENABLE_LLM_CACHE, LLM_CACHE_TTL_SEC — включение и время жизни кэша для LLM ответов (по умолчанию 600 с). Использует Redis.
 
@@ -59,6 +88,8 @@ LLM_CALLS_BUDGET — лимит вызовов LLM за процесс (8 по 
 FLOWISE_BASE_URL — базовый URL сервиса Flowise. Отдельные endpoints:
 
 FLOWISE_EXPLAIN_URL, FLOWISE_DEBATE_URL, FLOWISE_SCENARIO_URL — конечные точки для генерации объяснения, дебатов и сценариев.
+ENABLE_NEWS_SENTIMENT (0/1) — включает LLM‑оценку тональности/импакта для ingest_news.
+FLOWISE_SENTIMENT_URL — endpoint Flowise для оценки новостей (ожидается JSON‑список объектов с полями sentiment/impact_score/topics).
 
 FLOWISE_VALIDATE_URL — валидация торговых рекомендаций (если ENABLE_LLM_VALIDATOR=1).
 
@@ -93,17 +124,38 @@ TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM
 
 MONTH_STARS, YEAR_STARS — стоимость подписки в Telegram Stars (например, 500 и 5000).
 
-CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалюте.
+CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалюте.
+CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
+
+AFF_UNIT_TO_USD — коэффициент перевода «младших» единиц платежа (например, Stars) в приблизительные USD для аффилиат‑метрик (по умолчанию 0 — отключено).
+
+ENABLE_CRYPTO_PAY — включает кнопку «Оплатить криптой» в боте (по умолчанию 0 — кнопка скрыта, используйте платежи Telegram/Stars). Для реальной интеграции требуется CRYPTO_PAY_API_URL и корректная обработка вебхуков.
 CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
 
-TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
-TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
+TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
+TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
 
-PRICE_STARS_MONTH, PRICE_STARS_YEAR — стоимость месячной и годовой подписки в Telegram Stars (милли‑звёздах, например, 2500 и 25000 ≈ $25/$250).
+PRICE_STARS_MONTH, PRICE_STARS_YEAR — стоимость месячной и годовой подписки в Telegram Stars (милли‑звёздах, например, 2500 и 25000 ≈ $25/$250).
 
-CRYPTO_PAYMENT_URL — ссылка на оплату в криптовалюте.
+CRYPTO_PAYMENT_URL — ссылка на оплату в криптовалюте.
 
-Оплата: подписку можно оплатить звёздами через Telegram или криптовалютой; бот выдаёт адрес для перевода и активирует доступ после подтверждения.
+Оплата: подписку можно оплатить звёздами через Telegram или криптовалютой; бот выдаёт адрес для перевода и активирует доступ после подтверждения.
+
+Flowise endpoints (LLM)
+
+- Базовый URL внутри docker-сети: FLOWISE_BASE_URL=http://flowise:3000
+- Для каждого Chatflow возьмите его flowId и укажите полный endpoint вида:
+  - FLOWISE_SENTIMENT_URL=http://flowise:3000/api/v1/prediction/<SENTIMENT_FLOW_ID>
+  - FLOWISE_FORECAST_URL=http://flowise:3000/api/v1/prediction/<FORECAST_FLOW_ID>
+  - FLOWISE_EXPLAIN_URL=http://flowise:3000/api/v1/prediction/<EXPLAIN_FLOW_ID>
+  - FLOWISE_DEBATE_URL=http://flowise:3000/api/v1/prediction/<DEBATE_FLOW_ID>
+  - FLOWISE_SCENARIO_URL=http://flowise:3000/api/v1/prediction/<SCENARIO_FLOW_ID>
+  - FLOWISE_VALIDATE_URL=http://flowise:3000/api/v1/prediction/<VALIDATE_FLOW_ID>
+- Если endpoints не заданы, соответствующие LLM‑части будут пропущены с предупреждением, остальная логика отработает.
+
+Личные сообщения вместо канала: если не хотите использовать канал/чат, оставьте TELEGRAM_CHAT_ID пустым и задайте список получателей в TELEGRAM_DM_USER_IDS (через запятую). Бот сможет писать им напрямую только если эти пользователи предварительно нажали /start у бота (Telegram не позволяет боту первым начать диалог).
+
+Пользовательские инсайты: активные подписчики могут отправлять инсайты боту (меню «Инсайт»). Инсайт проходит оценку правдивости/актуальности (LLM при наличии FLOWISE_VALIDATE_URL, либо эвристика) и учитывается в новостных сигналах при формировании прогноза.
 
 
 6. Наблюдаемость и логирование
@@ -121,6 +173,8 @@ USE_KATS, USE_CPD_SIMPLE, CPD_Z_THRESHOLD, CPD_WINDOW — включают ра
 FEATURES_PRO, FEATURES_KATS — включают расширенный набор признаков (например, volume profile, carry) и Kats‑фичи. Отключайте, если хотите ускорить вычисления.
 
 ENABLE_STACKING — включает обучение линейного стэкинга по историческим прогнозам. Требует накопления ≥30 наблюдений.
+ENSEMBLE_SIMILAR_BONUS — бонус к весам моделей (0..1) по результатам на «похожих окнах» (по умолчанию 0.2).
+SIMILAR_TOPK_LIMIT — сколько «соседей» учитывать при динамическом взвешивании (по умолчанию 5).
 
 ENABLE_CHALLENGER, CHALLENGER_MODE — активируют вторую ветку ансамбля (uniform/stacking) для A/B сравнения.
 
@@ -156,8 +210,30 @@ RUN_INTERVAL_SEC — интервал планировщика для scheduled
 
 USE_COORDINATOR — включает многоагентный DAG; в противном случае используется линейный скрипт predict_release.
 
-ENABLE_MCP — поднимает мини‑сервер MCP (pipeline.mcp.server), который предоставляет безопасные эндпоинты для LLM‑агентов.
+USE_MASTER_AGENT — включает MasterAgent как центральную точку входа (возможен запуск отдельно: `python -m pipeline.agents.master`).
+
+ENABLE_MCP — поднимает мини‑сервер MCP (pipeline.mcp.server), который предоставляет безопасные эндпоинты для LLM‑агентов (автозапуск из планировщика при ENABLE_MCP=1).
+
+ENABLE_MULTI_DEBATE — включает «мульти‑агентные дебаты» (бычий/медвежий/квант) с итоговой агрегацией арбитром.
 
 MCP_HOST, MCP_PORT, MCP_URL — адрес и порт MCP.
 
 Заполняйте .env исходя из своих потребностей: выключайте тяжёлые источники (onchain, social, alt) для ускорения, включайте Flowise endpoints для генерации объяснений и дебатов, настраивайте лимиты LLM. Список не исчерпывающий — см. .env.example в репозитории для остальных переменных и значений по умолчанию.
+
+Модели LLM и токены
+
+- OPENAI_MODEL — дефолтная модель (рекомендуется `gpt-4o-mini` для быстрой обработки).
+- OPENAI_MODEL_MASTER — модель для MasterAgent/арбитра (рекомендуется `gpt-4o` для сложных рассуждений).
+- OPENAI_MODEL_NEWS_FACTS — модель для news_facts (по умолчанию `gpt-4o-mini`).
+- LLM_MAX_TOKENS — лимит на ответ (4096 по умолчанию — «пространство для мысли»).
+
+Order Flow (тик‑стрим)
+
+- ENABLE_ORDER_FLOW — включить сбор сделок (по умолчанию 0).
+- ORDERFLOW_WINDOW_SEC — длина окна для сбора (по умолчанию 60 сек).
+- ORDERFLOW_POLL_SEC — период REST‑опроса (по умолчанию 1 сек).
+- ORDERFLOW_USE_WS — использовать WebSocket‑стрим через ccxt.pro (если установлен) вместо REST‑опроса (0/1).
+
+Кэш y_true для ускорения динамического взвешивания
+
+- YTRUE_CACHE_TTL_SEC — TTL кэша (в Redis) для фактических цен y_true, вычисляемых через CCXT при оценке похожих окон (по умолчанию 86400 сек).

@@ -9,13 +9,14 @@ from loguru import logger
 
 
 def _build_exchange() -> ccxt.Exchange:
-    name = os.getenv("EXCHANGE", os.getenv("CCXT_PROVIDER", "binance"))
+    name = os.getenv("EXCHANGE", os.getenv("CCXT_EXCHANGE", os.getenv("CCXT_PROVIDER", "binance")))
     ex_cls = getattr(ccxt, name)
     api_key = os.getenv("EXCHANGE_API_KEY")
     secret = os.getenv("EXCHANGE_SECRET")
     password = os.getenv("EXCHANGE_PASSWORD")
     default_type = os.getenv("EXCHANGE_TYPE", "spot")  # spot|future|swap
-    params: Dict[str, Any] = {"enableRateLimit": True, "options": {"defaultType": default_type}}
+    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
+    params: Dict[str, Any] = {"enableRateLimit": True, "timeout": timeout_ms, "options": {"defaultType": default_type}}
     if api_key and secret:
         params.update({"apiKey": api_key, "secret": secret})
         if password:
@@ -92,4 +93,3 @@ class ExchangeClient:
             self.ex.set_leverage(leverage, symbol)
         except Exception:
             pass
-

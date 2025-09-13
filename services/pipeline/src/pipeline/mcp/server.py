@@ -23,6 +23,17 @@ import pandas as pd
 from loguru import logger
 
 from ..infra.s3 import download_bytes
+from ..regime.predictor_ml import predict as _predict_regime_ml  # type: ignore
+from ..regime.regime_detect import detect as _detect_regime
+from ..similarity.similar_past import SimilarPastInput as _SimilarPastInput
+from ..similarity.similar_past import run as _run_similar
+from ..models.models import ModelsInput as _ModelsInput
+from ..models.models import run as _run_models
+from ..ensemble.ensemble_rank import EnsembleInput as _EnsembleInput
+from ..ensemble.ensemble_rank import run as _run_ensemble
+from ..infra.db import fetch_recent_run_summaries as _fetch_run_summaries
+from ..agents.event_study import EventStudyInput as _EventStudyInput
+from ..agents.event_study import run as _run_event_study
 
 
 def _read_features(features_s3: str) -> pd.DataFrame:
@@ -73,10 +84,113 @@ def tool_news_top(params: Dict[str, Any]) -> Dict[str, Any]:
     return {"news_top": out}
 
 
+def tool_run_regime_detection(params: Dict[str, Any]) -> Dict[str, Any]:
+    s3 = str(params.get("features_s3"))
+    try:
+        rml = _predict_regime_ml(s3)
+        return {
+            "label": rml.label,
+            "confidence": float(max(rml.proba.values() or [0.0])),
+            "features": rml.features,
+        }
+    except Exception:
+        h = _detect_regime(s3)
+        return {"label": h.label, "confidence": float(h.confidence), "features": h.features}
+
+
+def tool_run_similarity_search(params: Dict[str, Any]) -> Dict[str, Any]:
+    s3 = str(params.get("features_s3"))
+    symbol = str(params.get("symbol", "BTCUSDT"))
+    k = int(params.get("k", 5))
+    res = _run_similar(_SimilarPastInput(features_path_s3=s3, symbol=symbol, k=k))
+    return {"topk": [r.__dict__ for r in res]}
+
+
+def _parse_horizon_minutes(h: Any) -> int:
+    if isinstance(h, (int, float)):
+        return int(h)
+    s = str(h or "").lower().strip()
+    if s.endswith("h"):
+        try:
+            return int(float(s[:-1]) * 60)
+        except Exception:
+            return 240
+    if s.endswith("m"):
+        try:
+            return int(float(s[:-1]))
+        except Exception:
+            return 240
+    if s in {"4h", "4"}:
+        return 240
+    if s in {"12h", "12"}:
+        return 720
+    try:
+        return int(s)
+    except Exception:
+        return 240
+
+
+def tool_run_models_and_ensemble(params: Dict[str, Any]) -> Dict[str, Any]:
+    s3 = str(params.get("features_s3"))
+    hz = params.get("horizon", "4h")
+    hmin = _parse_horizon_minutes(hz)
+    m = _run_models(_ModelsInput(features_path_s3=s3, horizon_minutes=hmin))
+    preds = [p.model_dump() for p in m.preds]
+    e = _run_ensemble(_EnsembleInput(preds=preds, horizon=(str(hz) if isinstance(hz, str) else None)))
+    return {
+        "ensemble": {
+            "y_hat": float(e.y_hat),
+            "interval": [float(e.interval[0]), float(e.interval[1])],
+            "proba_up": float(e.proba_up),
+            "weights": e.weights,
+            "rationale_points": e.rationale_points,
+        },
+        "last_price": float(m.last_price),
+        "atr": float(m.atr),
+        "preds": preds,
+    }
+
+
+def tool_get_recent_run_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
+    n = int(params.get("n", 3))
+    rows = _fetch_run_summaries(n)
+    return {"items": rows}
+
+
+def tool_run_event_study(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrapper for event study agent over MCP.
+
+    params: {event_type: str, k?: int, window_hours?: int, symbol?: str, provider?: str}
+    """
+    et = str(params.get("event_type", "")).strip().upper()
+    if not et:
+        raise ValueError("event_type is required")
+    k = int(params.get("k", 10))
+    wh = int(params.get("window_hours", 24))
+    symbol = str(params.get("symbol", "BTC/USDT"))
+    provider = str(params.get("provider", "binance"))
+    out = _run_event_study(_EventStudyInput(event_type=et, k=k, window_hours=wh, symbol=symbol, provider=provider))
+    return out
+
+
+def tool_run_pattern_discovery(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Stub for PatternDiscoveryAgent.
+
+    Returns not-implemented for now; will be wired to the real agent in Phase 2.
+    """
+    return {"status": "not-implemented"}
+
+
 TOOLS = {
     "get_features_tail": tool_get_features_tail,
     "levels_quantiles": tool_levels_quantiles,
     "news_top": tool_news_top,
+    "run_regime_detection": tool_run_regime_detection,
+    "run_similarity_search": tool_run_similarity_search,
+    "run_models_and_ensemble": tool_run_models_and_ensemble,
+    "get_recent_run_summaries": tool_get_recent_run_summaries,
+    "run_event_study": tool_run_event_study,
+    "run_pattern_discovery": tool_run_pattern_discovery,
 }
 
 
@@ -140,4 +254,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

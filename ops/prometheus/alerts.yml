@@ -127,3 +127,17 @@ groups:
           severity: info
         annotations:
           description: "Paper trading PnL over last 24h is negative"
+      - alert: NewsCountLow
+        expr: pipeline_value{name="news_count"} < 3
+        for: 120m
+        labels:
+          severity: warning
+        annotations:
+          description: "Too few news items ingested in the last releases"
+      - alert: RSSFailuresHigh
+        expr: pipeline_value{name="rss_fail"} > 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          description: "High count of failed RSS sources in ingest"

@@ -14,6 +14,7 @@ from loguru import logger
 from ..infra.db import (
     get_conn,
     upsert_prediction_outcome,
+    upsert_model_trust_regime_event,
 )
 from ..infra.metrics import push_values
 
@@ -330,6 +331,39 @@ def update_regime_alphas(window_days: int = None) -> Dict[Tuple[str, str], Dict[
             continue
         buckets[(reg, str(hz))].append((ts, per_model or {}, float(y_true)))
 
+    # Also load event types per run_id (from agents_predictions)
+    evmap: Dict[str, str] = {}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT run_id, agent, result_json FROM agents_predictions WHERE agent IN ('event_impact') OR agent LIKE 'event_study_%' AND created_at >= %s",
+                    (since,),
+                )
+                for rid, agent, res in cur.fetchall() or []:
+                    et = None
+                    try:
+                        if agent == "event_impact":
+                            hyp = (res or {}).get("hypothesis") or []
+                            for h in hyp:
+                                e = str(h.get("event", "")).upper()
+                                if e == "ETF":
+                                    et = "ETF_APPROVAL"
+                                elif e == "REG":
+                                    et = "SEC_ACTION"
+                                elif e in {"HACK", "FORK"}:
+                                    et = e
+                                if et:
+                                    break
+                        elif agent.startswith("event_study_"):
+                            et = agent.replace("event_study_", "").upper()
+                    except Exception:
+                        et = None
+                    if et:
+                        evmap[str(rid)] = et
+    except Exception:
+        evmap = {}
+
     def ewma_smape(samples: List[Tuple[datetime, dict, float]]) -> Dict[str, float]:
         # Compute EWMA sMAPE per model
         out: Dict[str, float] = {}
@@ -389,6 +423,65 @@ def update_regime_alphas(window_days: int = None) -> Dict[Tuple[str, str], Dict[
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"alpha upsert failed: reg={reg} hz={hz} model={m}: {e}")
         result[key] = alphas
+
+        # Event-type specific alphas (best-effort)
+        try:
+            # Reload rows for this (reg, hz) to get run_id
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT p.run_id, p.created_at, p.per_model_json, o.y_true
+                        FROM predictions p
+                        JOIN prediction_outcomes o USING (run_id, horizon)
+                        WHERE o.regime_label=%s AND p.horizon=%s AND p.created_at >= %s
+                        """,
+                        (reg, hz, since),
+                    )
+                    r2 = cur.fetchall() or []
+            # Group by event type present in evmap
+            ev_buckets: Dict[str, List[Tuple[datetime, dict, float]]] = defaultdict(list)
+            for rid, created_at, per_model, y_true in r2:
+                et = evmap.get(str(rid))
+                if not et:
+                    continue
+                try:
+                    ts2 = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+                except Exception:
+                    ts2 = now
+                if per_model and (y_true is not None):
+                    ev_buckets[str(et)].append((ts2, per_model or {}, float(y_true)))
+            for et, s_list in ev_buckets.items():
+                smape_ev = ewma_smape(s_list)
+                if not smape_ev:
+                    continue
+                vals_ev = {m: (1.0 / max(1e-6, v)) for m, v in smape_ev.items()}
+                s_ev = sum(vals_ev.values()) or 1.0
+                norm_ev = {m: v / (s_ev / max(1, len(vals_ev))) for m, v in vals_ev.items()}
+                # Smooth with previous event-specific weights
+                prev_ev: Dict[str, float] = {}
+                try:
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT model, weight FROM model_trust_regime_event WHERE regime_label=%s AND horizon=%s AND event_type=%s",
+                                (reg, hz, et),
+                            )
+                            for m, w in cur.fetchall() or []:
+                                prev_ev[str(m)] = float(w or 1.0)
+                except Exception:
+                    prev_ev = {}
+                for m, v in norm_ev.items():
+                    base = float(v)
+                    pr = float(prev_ev.get(m, 1.0))
+                    a = pr * (1.0 - beta) + base * beta
+                    a = max(alpha_min, min(alpha_max, a))
+                    try:
+                        upsert_model_trust_regime_event(reg, hz, et, m, float(a))
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"alpha(event) upsert failed: reg={reg} hz={hz} et={et} model={m}: {e}")
+        except Exception:
+            logger.exception("update_regime_alphas: event-specific alphas failed")
 
     # Export a snapshot for observability
     flat_vals: Dict[str, float] = {}

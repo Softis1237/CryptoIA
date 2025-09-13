@@ -21,7 +21,7 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
     def _health_response(self) -> Tuple[int, bytes]:
-        if self.path != "/health":
+        if self.path not in {"/health", "/healthz"}:
             return 404, b"Not Found"
         ok = run()
         return (200, b"OK") if ok else (500, b"FAIL")

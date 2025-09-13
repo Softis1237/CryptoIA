@@ -37,7 +37,7 @@ ops/	Инфраструктура и наблюдаемость (Prometheus, Gr
 git clone https://github.com/Softis1237/CryptoIA.git
 cd CryptoIA
 cp .env.example .env  # заполните переменные, см. docs/ENV.md
-Укажите ключи API (Glassnode, CryptoPanic, NewsAPI, CryptoQuant и др.), секреты S3/MinIO и параметры базы данных. По умолчанию сервис работает в таймзоне Asia/Jerusalem.
+Укажите ключи API (Dune, CryptoPanic, NewsAPI и др.), секреты S3/MinIO и параметры базы данных. По умолчанию сервис работает в таймзоне Asia/Jerusalem.
     1. Запустите инфраструктуру (Postgres + Redis + MinIO + Prometheus / Grafana) и основные сервисы:
 docker compose up -d --build
 Минимальный стек поднимет БД, кеш, MinIO, сервис pipeline, планировщик и пуш‑gateway. Графана доступна на http://localhost:3001 (импортируйте дашборд pipeline_overview.json из ops/grafana).

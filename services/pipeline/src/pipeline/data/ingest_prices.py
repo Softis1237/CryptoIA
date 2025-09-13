@@ -32,29 +32,42 @@ class IngestPricesOutput(BaseModel):
 
 
 def run(payload: IngestPricesInput) -> IngestPricesOutput:
-    provider_name = os.getenv("CCXT_PROVIDER", "binance")
+    provider_name = os.getenv("CCXT_EXCHANGE", os.getenv("CCXT_PROVIDER", "binance"))
+    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
     ex_cls = getattr(ccxt, provider_name)
-    ex = ex_cls({"enableRateLimit": True})
+    ex = ex_cls({"enableRateLimit": True, "timeout": timeout_ms})
 
     rows = []
+    retries = int(os.getenv("CCXT_RETRIES", "3"))
+    backoff = float(os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
     for symbol in payload.symbols:
         since = payload.start_ts
         limit = int((payload.end_ts - payload.start_ts) / 60000) + 10
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe="1m", since=since, limit=limit)
-        for ts, o, h, low, c, v in ohlcv:
-            if ts > payload.end_ts:
+        attempt = 0
+        while True:
+            try:
+                ohlcv = ex.fetch_ohlcv(symbol, timeframe="1m", since=since, limit=limit)
+                for ts, o, h, low, c, v in ohlcv:
+                    if ts > payload.end_ts:
+                        break
+                    rows.append(
+                        {
+                            "ts": ts,
+                            "open": o,
+                            "high": h,
+                            "low": low,
+                            "close": c,
+                            "volume": v,
+                            "symbol": symbol,
+                        }
+                    )
                 break
-            rows.append(
-                {
-                    "ts": ts,
-                    "open": o,
-                    "high": h,
-                    "low": low,
-                    "close": c,
-                    "volume": v,
-                    "symbol": symbol,
-                }
-            )
+            except Exception:
+                attempt += 1
+                if attempt > retries:
+                    raise
+                import time
+                time.sleep(backoff * attempt)
 
     df = pd.DataFrame(
         rows, columns=["ts", "open", "high", "low", "close", "volume", "symbol"]

@@ -509,6 +509,30 @@ def predict_release(
     except Exception:
         pass
 
+    # Persist compact run summary for agent memory (best-effort)
+    try:
+        from ..infra.db import insert_run_summary as _ins_rs
+
+        final_summary = {
+            "slot": slot,
+            "regime": str(regime.label),
+            "regime_conf": float(regime.confidence),
+            "e4": {
+                "y_hat": float(e4.y_hat),
+                "proba_up": float(e4.proba_up),
+                "interval": [float(e4.interval[0]), float(e4.interval[1])],
+            },
+            "e12": {
+                "y_hat": float(e12.y_hat),
+                "proba_up": float(e12.proba_up),
+                "interval": [float(e12.interval[0]), float(e12.interval[1])],
+            },
+            "risk_flags": risk_flags,
+        }
+        _ins_rs(run_id, final_summary, None)
+    except Exception:
+        pass
+
 
 def main():
     init_sentry()

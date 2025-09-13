@@ -31,6 +31,260 @@ def get_conn():
         conn.close()
 
 
+# ============ Affiliates / Referrals ============
+
+def ensure_affiliates_tables() -> None:
+    sql_aff = (
+        "CREATE TABLE IF NOT EXISTS affiliates (\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
+        "  partner_user_id BIGINT UNIQUE NOT NULL,\n"
+        "  partner_name TEXT,\n"
+        "  code TEXT UNIQUE NOT NULL,\n"
+        "  percent INT NOT NULL DEFAULT 50,\n"
+        "  balance BIGINT NOT NULL DEFAULT 0,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    sql_ref = (
+        "CREATE TABLE IF NOT EXISTS referrals (\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
+        "  partner_user_id BIGINT NOT NULL,\n"
+        "  referred_user_id BIGINT NOT NULL,\n"
+        "  code TEXT,\n"
+        "  charge_id TEXT,\n"
+        "  amount BIGINT NOT NULL,\n"
+        "  commission BIGINT NOT NULL,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_aff)
+            cur.execute(sql_ref)
+
+
+def _gen_ref_code(user_id: int) -> str:
+    # Simple code from base36 of user_id
+    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    n = int(user_id)
+    out = []
+    if n == 0:
+        return "A0"
+    while n > 0:
+        n, r = divmod(n, 36)
+        out.append(chars[r])
+    return "A" + "".join(reversed(out))
+
+
+def get_or_create_affiliate(partner_user_id: int, partner_name: str | None = None, percent: int = 50) -> tuple[str, int]:
+    """Return (code, percent) for partner; create if not exists."""
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT code, percent FROM affiliates WHERE partner_user_id=%s",
+                (partner_user_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return str(row[0]), int(row[1])
+            code = _gen_ref_code(partner_user_id)
+            try:
+                cur.execute(
+                    "INSERT INTO affiliates (partner_user_id, partner_name, code, percent) VALUES (%s, %s, %s, %s)",
+                    (partner_user_id, partner_name, code, percent),
+                )
+            except Exception:
+                # Fallback: random suffix collision
+                code = f"A{partner_user_id}"
+                cur.execute(
+                    "INSERT INTO affiliates (partner_user_id, partner_name, code, percent) VALUES (%s, %s, %s, %s)",
+                    (partner_user_id, partner_name, code, percent),
+                )
+            return code, percent
+
+
+def set_affiliate_percent(partner_user_id: int, percent: int) -> None:
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE affiliates SET percent=%s WHERE partner_user_id=%s",
+                (percent, partner_user_id),
+            )
+
+
+def get_affiliate_by_code(code: str) -> tuple[int, int, str | None] | None:
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT partner_user_id, percent, partner_name FROM affiliates WHERE code=%s",
+                (code,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return int(row[0]), int(row[1]), (row[2] if row[2] is not None else None)
+
+
+def upsert_user_referrer(user_id: int, ref_code: str, ref_name: str | None = None) -> None:
+    sql = (
+        "INSERT INTO users (user_id, referrer_code, referrer_name) VALUES (%s, %s, %s) "
+        "ON CONFLICT (user_id) DO UPDATE SET referrer_code=EXCLUDED.referrer_code, referrer_name=EXCLUDED.referrer_name"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id, ref_code, ref_name))
+
+
+def get_user_payments_count(user_id: int) -> int:
+    ensure_payments_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(1) FROM payments WHERE user_id=%s", (user_id,))
+            row = cur.fetchone()
+            return int(row[0] or 0)
+
+
+def apply_affiliate_commission_for_first_purchase(user_id: int, charge_id: str, amount: int) -> None:
+    """If user has referrer and this is the first payment, accrue commission to partner balance and store referral row."""
+    # Check first purchase
+    cnt = get_user_payments_count(user_id)
+    if cnt != 1:
+        return
+    # Load referrer_code from users
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT referrer_code FROM users WHERE user_id=%s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return
+            ref_code = str(row[0])
+    aff = get_affiliate_by_code(ref_code)
+    if not aff:
+        return
+    partner_user_id, percent, partner_name = aff
+    commission = int(round(amount * percent / 100.0))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Accrue balance
+            cur.execute(
+                "UPDATE affiliates SET balance=balance+%s WHERE partner_user_id=%s",
+                (commission, partner_user_id),
+            )
+            # Insert referral row
+            cur.execute(
+                "INSERT INTO referrals (partner_user_id, referred_user_id, code, charge_id, amount, commission) VALUES (%s, %s, %s, %s, %s, %s)",
+                (partner_user_id, user_id, ref_code, charge_id, amount, commission),
+            )
+
+
+def get_affiliate_stats(partner_user_id: int) -> tuple[int, int]:
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(1), COALESCE(SUM(commission),0) FROM referrals WHERE partner_user_id=%s",
+                (partner_user_id,),
+            )
+            row = cur.fetchone() or (0, 0)
+            return int(row[0] or 0), int(row[1] or 0)
+
+
+def get_user_referrer_info(user_id: int) -> tuple[str | None, int | None, int | None, str | None]:
+    """Return (ref_code, partner_user_id, percent, partner_name) for a user, if any."""
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT referrer_code FROM users WHERE user_id=%s", (user_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None, None, None, None
+            code = str(row[0])
+            cur.execute(
+                "SELECT partner_user_id, percent, partner_name FROM affiliates WHERE code=%s",
+                (code,),
+            )
+            row2 = cur.fetchone()
+            if not row2:
+                return code, None, None, None
+            return code, int(row2[0]), int(row2[1]), (row2[2] if row2[2] is not None else None)
+
+
+def list_referrals(partner_user_id: int, limit: int = 10) -> list[tuple[int, str, int, int, str]]:
+    """Return recent referrals for a partner: (referred_user_id, charge_id, amount, commission, created_at_iso)."""
+    ensure_affiliates_tables()
+    out: list[tuple[int, str, int, int, str]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT referred_user_id, charge_id, amount, commission, created_at FROM referrals WHERE partner_user_id=%s ORDER BY created_at DESC LIMIT %s",
+                (partner_user_id, limit),
+            )
+            rows = cur.fetchall() or []
+            for r in rows:
+                out.append((int(r[0]), str(r[1] or ""), int(r[2] or 0), int(r[3] or 0), (r[4].isoformat() if r[4] else "")))
+    return out
+
+
+# ============ Affiliate requests ============
+
+def ensure_affiliate_requests_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS affiliate_requests (\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
+        "  user_id BIGINT NOT NULL,\n"
+        "  username TEXT,\n"
+        "  note TEXT,\n"
+        "  status TEXT NOT NULL DEFAULT 'pending',\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n"
+        "  processed_at TIMESTAMPTZ\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def insert_affiliate_request(user_id: int, username: str | None, note: str | None = None) -> str:
+    ensure_affiliate_requests_table()
+    sql = "INSERT INTO affiliate_requests (user_id, username, note) VALUES (%s, %s, %s) RETURNING id"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id, username, note))
+            row = cur.fetchone()
+            return str(row[0])
+
+
+def list_affiliate_requests(status: str = "pending", limit: int = 20) -> list[tuple[str, int, str | None, str | None, str]]:
+    ensure_affiliate_requests_table()
+    sql = (
+        "SELECT id, user_id, username, note, created_at FROM affiliate_requests "
+        "WHERE status=%s ORDER BY created_at DESC LIMIT %s"
+    )
+    out: list[tuple[str, int, str | None, str | None, str]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (status, limit))
+            rows = cur.fetchall() or []
+            for r in rows:
+                out.append((str(r[0]), int(r[1]), (r[2] if r[2] is not None else None), (r[3] if r[3] is not None else None), r[4].isoformat() if r[4] else ""))
+    return out
+
+
+def mark_affiliate_request(id_str: str, status: str) -> None:
+    ensure_affiliate_requests_table()
+    sql = "UPDATE affiliate_requests SET status=%s, processed_at=now() WHERE id=%s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (status, id_str))
+
+
+
 def insert_news_signals(rows: Iterable[dict]) -> int:
     sql = (
         "INSERT INTO news_signals (src_id, ts, title, source, url, sentiment, topics, impact_score, confidence) "
@@ -85,6 +339,34 @@ def insert_news_facts(rows: Iterable[dict]) -> int:
                 count += cur.rowcount
     logger.info(f"Inserted news facts: {count}")
     return count
+
+
+def fetch_news_facts_by_type(typ: str, limit: int = 50) -> list[tuple[str, str | None, float | None, float | None, str | None]]:
+    """Return recent news facts of a given type.
+
+    Output: list of (ts_iso, direction, magnitude, confidence, src_id)
+    """
+    sql = (
+        "SELECT ts, direction, magnitude, confidence, src_id FROM news_facts "
+        "WHERE type=%s ORDER BY ts DESC LIMIT %s"
+    )
+    out: list[tuple[str, str | None, float | None, float | None, str | None]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (typ, int(limit)))
+            rows = cur.fetchall() or []
+            for r in rows:
+                ts, direction, mag, conf, src_id = r
+                out.append(
+                    (
+                        (ts.isoformat() if hasattr(ts, "isoformat") else str(ts)),
+                        (str(direction) if direction is not None else None),
+                        (float(mag) if mag is not None else None),
+                        (float(conf) if conf is not None else None),
+                        (str(src_id) if src_id is not None else None),
+                    )
+                )
+    return out
 
 
 def upsert_prediction(
@@ -204,6 +486,32 @@ def fetch_model_trust_regime(regime_label: str, horizon: str) -> dict:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (regime_label, horizon))
+            rows = cur.fetchall() or []
+            for m, w in rows:
+                out[str(m)] = float(w or 0.0)
+    return out
+
+
+def upsert_model_trust_regime_event(
+    regime_label: str, horizon: str, event_type: str, model: str, weight: float
+) -> None:
+    sql = (
+        "INSERT INTO model_trust_regime_event (regime_label, horizon, event_type, model, weight) VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (regime_label, horizon, event_type, model) DO UPDATE SET weight=EXCLUDED.weight, updated_at=now()"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (regime_label, horizon, event_type, model, weight))
+
+
+def fetch_model_trust_regime_event(regime_label: str, horizon: str, event_type: str) -> dict:
+    sql = (
+        "SELECT model, weight FROM model_trust_regime_event WHERE regime_label=%s AND horizon=%s AND event_type=%s"
+    )
+    out: dict[str, float] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (regime_label, horizon, event_type))
             rows = cur.fetchall() or []
             for m, w in rows:
                 out[str(m)] = float(w or 0.0)
@@ -597,9 +905,12 @@ def ensure_subscriptions_tables() -> None:
 def ensure_payments_table() -> None:
     sql = (
         "CREATE TABLE IF NOT EXISTS payments (\n"
-        "  charge_id TEXT PRIMARY KEY,\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
         "  user_id BIGINT NOT NULL,\n"
+        "  charge_id TEXT UNIQUE NOT NULL,\n"
         "  amount BIGINT NOT NULL,\n"
+        "  status TEXT NOT NULL DEFAULT 'paid',\n"
+        "  payload JSONB,\n"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
         ")"
     )
@@ -699,20 +1010,7 @@ def sweep_expired_subscriptions(now=None) -> int:
     return count
 
 
-def ensure_payments_table() -> None:
-    sql = (
-        "CREATE TABLE IF NOT EXISTS payments (\n"
-        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
-        "  user_id BIGINT NOT NULL,\n"
-        "  charge_id TEXT UNIQUE NOT NULL,\n"
-        "  status TEXT NOT NULL,\n"
-        "  payload JSONB,\n"
-        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
-        ")"
-    )
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
+    # duplicate older definition removed; unified above
 
 
 def mark_payment_refunded(charge_id: str) -> int | None:
@@ -749,3 +1047,133 @@ def insert_user_feedback(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (user_id, run_id, rating, comment, Json(meta or {})))
+
+
+# --- User insights (community signals) -------------------------------------------------
+
+def ensure_user_insights_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS user_insights (\n"
+        "  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n"
+        "  user_id BIGINT NOT NULL,\n"
+        "  text TEXT NOT NULL,\n"
+        "  url TEXT,\n"
+        "  verdict TEXT,\n"
+        "  score_truth NUMERIC,\n"
+        "  score_freshness NUMERIC,\n"
+        "  meta JSONB,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def insert_user_insight(
+    user_id: int,
+    text: str,
+    url: Optional[str] = None,
+    verdict: Optional[str] = None,
+    score_truth: Optional[float] = None,
+    score_freshness: Optional[float] = None,
+    meta: Optional[dict] = None,
+) -> str:
+    ensure_user_insights_table()
+    sql = (
+        "INSERT INTO user_insights (user_id, text, url, verdict, score_truth, score_freshness, meta) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    user_id,
+                    text,
+                    url,
+                    verdict,
+                    score_truth,
+                    score_freshness,
+                    Json(meta or {}),
+                ),
+            )
+            row = cur.fetchone()
+            return str(row[0])
+
+
+def fetch_user_insights_recent(
+    hours: int = 24,
+    min_truth: float = 0.6,
+    min_freshness: float = 0.5,
+    limit: int = 50,
+) -> list[dict]:
+    ensure_user_insights_table()
+    sql = (
+        "SELECT user_id, text, url, verdict, score_truth, score_freshness, created_at "
+        "FROM user_insights "
+        "WHERE created_at >= now() - (%s || ' hours')::interval "
+        "AND COALESCE(score_truth, 0) >= %s AND COALESCE(score_freshness, 0) >= %s "
+        "ORDER BY created_at DESC LIMIT %s"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (str(float(hours)), float(min_truth), float(min_freshness), int(limit)))
+            rows = cur.fetchall() or []
+            for r in rows:
+                uid, text, url, verdict, st, sf, created_at = r
+                out.append(
+                    {
+                        "user_id": int(uid),
+                        "text": str(text or ""),
+                        "url": str(url or "") or None,
+                        "verdict": str(verdict or ""),
+                        "score_truth": float(st or 0.0),
+                        "score_freshness": float(sf or 0.0),
+                        "created_at": created_at,
+                    }
+                )
+    return out
+
+
+# --- Run summaries (agent memory) -------------------------------------------
+
+def insert_run_summary(
+    run_id: str,
+    final_analysis: dict | None = None,
+    prediction_outcome: dict | None = None,
+) -> None:
+    """Insert or update compact summary for a run used as agent memory."""
+    sql = (
+        "INSERT INTO run_summaries (run_id, final_analysis_json, prediction_outcome_json) "
+        "VALUES (%s, %s, %s) "
+        "ON CONFLICT (run_id) DO UPDATE SET final_analysis_json=EXCLUDED.final_analysis_json, prediction_outcome_json=EXCLUDED.prediction_outcome_json"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (run_id, Json(final_analysis or {}), Json(prediction_outcome or {})))
+
+
+def fetch_recent_run_summaries(n: int = 3) -> list[dict]:
+    """Return recent run summaries as list of dicts with keys: run_id, created_at, final, outcome."""
+    sql = (
+        "SELECT run_id, created_at, final_analysis_json, prediction_outcome_json FROM run_summaries "
+        "ORDER BY created_at DESC LIMIT %s"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(n),))
+            rows = cur.fetchall() or []
+            for r in rows:
+                run_id, created_at, final, outcome = r
+                out.append(
+                    {
+                        "run_id": str(run_id),
+                        "created_at": created_at.isoformat() if created_at else "",
+                        "final": final or {},
+                        "outcome": outcome or {},
+                    }
+                )
+    return out

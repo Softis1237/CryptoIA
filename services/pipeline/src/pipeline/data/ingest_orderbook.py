@@ -30,9 +30,24 @@ class IngestOrderbookOutput(BaseModel):
 
 
 def run(payload: IngestOrderbookInput) -> IngestOrderbookOutput:
-    provider = os.getenv("CCXT_PROVIDER", "binance")
-    exchange = getattr(ccxt, provider)({"enableRateLimit": True})
-    ob = exchange.fetch_order_book(payload.symbol, limit=payload.depth)
+    provider = os.getenv("CCXT_EXCHANGE", os.getenv("CCXT_PROVIDER", "binance"))
+    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
+    exchange = getattr(ccxt, provider)({"enableRateLimit": True, "timeout": timeout_ms})
+
+    retries = int(os.getenv("CCXT_RETRIES", "3"))
+    backoff = float(os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
+    attempt = 0
+    while True:
+        try:
+            ob = exchange.fetch_order_book(payload.symbol, limit=payload.depth)
+            break
+        except Exception:
+            attempt += 1
+            if attempt > retries:
+                raise
+            import time
+
+            time.sleep(backoff * attempt)
     bids: List[List[float]] = ob.get("bids", [])[: payload.depth]
     asks: List[List[float]] = ob.get("asks", [])[: payload.depth]
 
