@@ -23,6 +23,7 @@ from ..infra.db import (
     payment_exists,
     mark_payment_refunded,
     mark_subscription_refunded,
+    get_user_payments_count,
     get_or_create_affiliate,
     get_affiliate_stats,
     set_affiliate_percent,
@@ -120,6 +121,8 @@ I18N = {
         "start_menu_pay": "Оплата",
         "start_menu_about": "Описание проекта",
         "start_menu_insight": "Инсайт",
+        "pong": "Понг",
+        "your_id": "Ваш ID: {uid}",
         "choose_plan": "Выберите план:",
         "plan_month": "1 месяц — {m_stars}⭐",
         "plan_year": "12 месяцев — {y_stars}⭐",
@@ -185,6 +188,8 @@ I18N = {
         "start_menu_pay": "Payment",
         "start_menu_about": "About project",
         "start_menu_insight": "Insight",
+        "pong": "Pong",
+        "your_id": "Your ID: {uid}",
         "choose_plan": "Choose a plan:",
         "plan_month": "1 month — {m_stars}⭐",
         "plan_year": "12 months — {y_stars}⭐",
@@ -550,6 +555,33 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(_t(lang, "help"))
 
 
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    await update.message.reply_text(_t(lang, "pong"))
+
+
+async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    uid = update.message.from_user.id if update and update.message else 0
+    await update.message.reply_text(_t(lang, "your_id", uid=uid))
+
+
+async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Fallback for unknown commands — show help
+    lang = _user_lang(update, context)
+    try:
+        await update.message.reply_text(_t(lang, "help"))
+    except Exception:
+        pass
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:  # type: ignore[override]
+    try:
+        logger.exception("Bot error", exc_info=context.error)
+    except Exception:
+        pass
+
+
 async def aff_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = _user_lang(update, context)
     if not _is_admin(update.message.from_user.id):
@@ -734,6 +766,8 @@ async def post_init(app: Application) -> None:
         ("renew", "renew subscription"),
         ("redeem", "redeem code"),
         ("help", "show help"),
+        ("ping", "health check"),
+        ("id", "show your id"),
     ]
     commands_ru = [
         ("start", "стартовое меню"),
@@ -742,6 +776,8 @@ async def post_init(app: Application) -> None:
         ("renew", "продление"),
         ("redeem", "активация кода"),
         ("help", "подсказка"),
+        ("ping", "проверка связи"),
+        ("id", "ваш ID"),
     ]
     await app.bot.set_my_commands(commands_en, language_code="en")
     await app.bot.set_my_commands(commands_ru, language_code="ru")
@@ -813,6 +849,10 @@ def main():
     app.add_handler(CommandHandler("admin_sweep", admin_sweep))
     app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler("lang", lang_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("menu", start))
+    app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:(ru|en)$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^menu:(lang|pay|about|affiliate)$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^menu:(insight)$"))
@@ -857,6 +897,10 @@ def main():
             await update.message.reply_text("Error" if lang == "en" else "Ошибка")
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    # Unknown commands fallback
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
+    # Error handler
+    app.add_error_handler(error_handler)
     logger.info("Payments bot started")
     app.run_polling(allowed_updates=["message", "pre_checkout_query", "callback_query"])
 

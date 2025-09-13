@@ -134,6 +134,34 @@
         {"expr": "pipeline_value{name=~\"alpha_.*\"}", "legendFormat": "{{name}}", "refId": "A"}
       ],
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 99}
+    },
+    {
+      "type": "graph",
+      "title": "Release SLA (total sec)",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum(pipeline_step_seconds{job=\"predict_release\"}) by (slot)", "legendFormat": "{{slot}}", "refId": "A"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 108}
+    },
+    {
+      "type": "graph",
+      "title": "RT Triggers Fired",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=~\"fired_.*\",job=\"rt_trigger\"}", "legendFormat": "{{name}}", "refId": "A"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 117}
+    },
+    {
+      "type": "graph",
+      "title": "RT Latency / Dedup",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "pipeline_value{name=\"latency_sec\",job=\"rt_master\"}", "legendFormat": "latency_sec", "refId": "A"},
+        {"expr": "pipeline_value{name=\"dedup_skipped\",job=\"rt_master\"}", "legendFormat": "dedup_skipped", "refId": "B"}
+      ],
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 126}
     }
   ],
   "schemaVersion": 37,

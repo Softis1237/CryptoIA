@@ -51,7 +51,7 @@ from ..trading.publish_telegram import (
 from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
-from ..utils.calibration import calibrate_proba_by_uncertainty
+from ..utils.calibration import calibrate_proba
 
 
 def predict_release(
@@ -279,11 +279,11 @@ def predict_release(
     msg.append(f"<b>BTC Forecast — {slot}</b>")
     msg.append(f"Run: <code>{run_id}</code>")
     msg.append("")
-    e4_proba_cal = calibrate_proba_by_uncertainty(
-        e4.proba_up, e4.interval, m4.last_price, m4.atr
+    e4_proba_cal = calibrate_proba(
+        e4.proba_up, e4.interval, m4.last_price, m4.atr, "4h"
     )
-    e12_proba_cal = calibrate_proba_by_uncertainty(
-        e12.proba_up, e12.interval, m4.last_price, m4.atr
+    e12_proba_cal = calibrate_proba(
+        e12.proba_up, e12.interval, m4.last_price, m4.atr, "12h"
     )
     msg.append(
         f"<b>4h</b>: ŷ={e4.y_hat:.2f} (p_up={e4_proba_cal:.2f} cal, interval=({e4.interval[0]:.2f}..{e4.interval[1]:.2f}))"
@@ -479,8 +479,8 @@ def predict_release(
             "p_up_4h": float(e4.proba_up),
             "p_up_12h": float(e12.proba_up),
             "p_up_4h_cal": float(
-                calibrate_proba_by_uncertainty(
-                    e4.proba_up, e4.interval, m4.last_price, m4.atr
+                calibrate_proba(
+                    e4.proba_up, e4.interval, m4.last_price, m4.atr, "4h"
                 )
             ),
             "interval_width_pct_4h": float(

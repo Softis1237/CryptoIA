@@ -40,18 +40,22 @@ def run(payload: IngestPricesInput) -> IngestPricesOutput:
     retries = int(os.getenv("CCXT_RETRIES", "3"))
     backoff = float(os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
     for symbol in payload.symbols:
-        since = payload.start_ts
-        limit = int((payload.end_ts - payload.start_ts) / 60000) + 10
+        # ccxt expects milliseconds; convert once
+        since_ms = int(payload.start_ts) * 1000
+        end_ms = int(payload.end_ts) * 1000
+        # 1m candles count (add small buffer)
+        limit = int((payload.end_ts - payload.start_ts) / 60) + 10
         attempt = 0
         while True:
             try:
-                ohlcv = ex.fetch_ohlcv(symbol, timeframe="1m", since=since, limit=limit)
+                ohlcv = ex.fetch_ohlcv(symbol, timeframe="1m", since=since_ms, limit=limit)
                 for ts, o, h, low, c, v in ohlcv:
-                    if ts > payload.end_ts:
+                    if ts > end_ms:
                         break
                     rows.append(
                         {
-                            "ts": ts,
+                            # store seconds to match downstream expectations
+                            "ts": int(ts // 1000),
                             "open": o,
                             "high": h,
                             "low": low,

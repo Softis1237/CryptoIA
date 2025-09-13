@@ -30,6 +30,8 @@ from ..data.ingest_news import IngestNewsInput, run as run_news
 from ..features.features_calc import FeaturesCalcInput, run as run_features
 from .queue import pop_trigger
 from ..infra.metrics import push_values
+from ..utils.calibration import calibrate_proba
+from .queue import get_key as _get_cache, setex as _set_cache
 from ..infra.health import start_background as start_health_server
 
 
@@ -188,13 +190,24 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     preds = out.get("preds") or []
     last_price = float(out.get("last_price", 0.0) or 0.0)
     atr = float(out.get("atr", 0.0) or 0.0)
+    # Apply probability calibration (isotonic + uncertainty)
+    try:
+        p_cal = calibrate_proba(
+            float(e.get("proba_up", 0.5) or 0.5),
+            (float((e.get("interval") or [0.0, 0.0])[0]), float((e.get("interval") or [0.0, 0.0])[1])),
+            last_price,
+            atr,
+            hz,
+        )
+    except Exception:
+        p_cal = float(e.get("proba_up", 0.5) or 0.5)
     upsert_prediction(
         run_id,
         hz,
         float(e.get("y_hat", 0.0) or 0.0),
         float((e.get("interval") or [0.0, 0.0])[0]),
         float((e.get("interval") or [0.0, 0.0])[1]),
-        float(e.get("proba_up", 0.5) or 0.5),
+        float(p_cal),
         {p.get("model"): {k: p.get(k) for k in ("y_hat", "pi_low", "pi_high", "proba_up", "cv_metrics")} for p in preds},
     )
     upsert_ensemble_weights(run_id, e.get("weights") or {})
@@ -216,10 +229,10 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     # 5) Trade card
     tri = TradeRecommendInput(
         current_price=last_price,
-        y_hat_4h=float(e.get("y_hat", 0.0) or 0.0),  # reusing field name for short horizon
+        y_hat_4h=float(e.get("y_hat", 0.0) or 0.0),  # reuse field for short horizon
         interval_low=float((e.get("interval") or [0.0, 0.0])[0]),
         interval_high=float((e.get("interval") or [0.0, 0.0])[1]),
-        proba_up=float(e.get("proba_up", 0.5) or 0.5),
+        proba_up=float(p_cal),
         atr=atr,
         regime=str(regime.get("label")),
         account_equity=float(os.getenv("ACCOUNT_EQUITY", "1000")),
@@ -250,7 +263,7 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
         f"<b>Real-Time сигнал</b> ({hz})\n"
         f"{reason_text}\n\n"
         + (f"Тех.сентимент: {ta.get('technical_sentiment','n/a')} (conf≈{float(ta.get('confidence_score',0.0)):.2f})\n" if ta else "")
-        + f"p_up≈{float(e.get('proba_up',0.5)):.2f}, ŷ≈{float(e.get('y_hat',0.0)):.2f}\n"
+        + f"p_up(cal)≈{float(p_cal):.2f}, ŷ≈{float(e.get('y_hat',0.0)):.2f}\n"
         + f"Рекомендация: {card.get('side')} lev×{card.get('leverage')} SL={card.get('stop_loss')} TP={card.get('take_profit')}\n"
         + (f"Событие: {event_type}\n" if event_type else "")
         + (f"EventStudy: n={ev_summary.get('n')} avg={ev_summary.get('avg_change'):.3f} p_pos={ev_summary.get('p_positive'):.2f}\n" if isinstance(ev_summary, dict) and ev_summary.get('n') else "")
@@ -258,10 +271,31 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     )
     upsert_explanations(run_id, md, [])
 
-    # Optional: publish concise Telegram alert
-    # Publish only if not NO-TRADE and verification passed
+    # Optional: publish concise Telegram alert with Redis-based dedup
+    # Publish only if not NO-TRADE, verification passed, and not recently sent similar alert
     try:
         if card.get("side") != "NO-TRADE" and ok:
+            # Dedup key: type+horizon+side bucket
+            try:
+                side_est = str(card.get("side") or ("LONG" if p_cal >= 0.5 else "SHORT"))
+                dedup_sec = int(os.getenv("RT_ALERT_DEDUP_SEC", "120"))
+                dkey = f"rt:dedup:{trigger.type}:{hz}:{side_est}"
+                recent = _get_cache(dkey)
+                if recent:
+                    try:
+                        push_values(job="rt_master", values={"dedup_skipped": 1.0}, labels={"type": trigger.type, "horizon": hz})
+                    except Exception:
+                        pass
+                    return {
+                        "run_id": run_id,
+                        "slot": slot,
+                        "horizon": hz,
+                        "trigger": trigger.type,
+                        "trade": {"card": card, "verified": ok, "reason": reason, "dedup": True},
+                    }
+                _set_cache(dkey, dedup_sec, "1")
+            except Exception:
+                pass
             rt_chat = os.getenv("TELEGRAM_RT_CHAT_ID")
             if rt_chat:
                 publish_message_to(rt_chat, md)
