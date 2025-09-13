@@ -119,6 +119,15 @@ services:
       - prometheus
     restart: unless-stopped
 
+  rt_tune:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.ops.rt_tune
+    restart: unless-stopped
+
   flowise:
     image: flowiseai/flowise:latest
     ports:
@@ -186,6 +195,11 @@ services:
     restart: unless-stopped
     environment:
       - CCXT_EXCHANGE=binance
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/healthz\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   rt_master:
     build:
@@ -200,6 +214,11 @@ services:
     restart: unless-stopped
     environment:
       - CCXT_EXCHANGE=binance
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/healthz\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   bot:
     build:

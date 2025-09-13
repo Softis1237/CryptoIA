@@ -16,6 +16,7 @@ from ..infra.logging_config import init_logging
 from ..ops.cv_metrics_push import run as push_cv_metrics
 from ..ops.feedback_metrics import collect_outcomes, update_regime_alphas
 from ..ops.retrain import maybe_run as maybe_retrain
+from ..ops.rt_paper_adapt import run as paper_adapt
 from .agent_flow import run_release_flow
 from ..agents.master import run_master_flow
 from ..mcp.server import serve_in_thread as _mcp_serve_in_thread
@@ -76,6 +77,13 @@ def main():
             try:
                 collect_outcomes("4h")
                 collect_outcomes("12h")
+                # RT horizons
+                rt_hz = os.getenv("RT_OUTCOMES_HORIZONS", "30m,60m").replace(" ", ",").split(",")
+                for hz in [h.strip() for h in rt_hz if h.strip()]:
+                    try:
+                        collect_outcomes(hz)
+                    except Exception:
+                        pass
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"scheduled_runner: collect_outcomes failed: {e}")
             # Update regime alphas not more often than ALPHA_UPDATE_INTERVAL_H
@@ -102,6 +110,12 @@ def main():
                 maybe_retrain()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"scheduled_runner: retrain failed: {e}")
+            # Adapt model trust from paper PnL (best-effort)
+            try:
+                if os.getenv("RUN_PAPER_ADAPT", "1") in {"1", "true", "True"}:
+                    paper_adapt()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"scheduled_runner: paper_adapt failed: {e}")
         except Exception as e:  # noqa: BLE001
             logger.exception(f"scheduled_runner: run failed: {e}")
         try:

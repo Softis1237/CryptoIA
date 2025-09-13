@@ -79,7 +79,22 @@ def _get_y_true(ts_iso: str, horizon: str, provider: str) -> Optional[float]:
             import ccxt  # type: ignore
             ex = getattr(ccxt, provider)({"enableRateLimit": True})
             ts = pd.Timestamp(ts_iso, tz="UTC").to_pydatetime()
-            ahead = ts + (timedelta(hours=4) if horizon == "4h" else timedelta(hours=12))
+            # Parse horizon like '15m', '30m', '60m', '1h', '4h', '12h'
+            h = str(horizon).lower()
+            if h.endswith("m"):
+                try:
+                    minutes = int(float(h[:-1]))
+                except Exception:
+                    minutes = 30
+                ahead = ts + timedelta(minutes=max(1, minutes))
+            elif h.endswith("h"):
+                try:
+                    hours = int(float(h[:-1]))
+                except Exception:
+                    hours = 4
+                ahead = ts + timedelta(hours=max(1, hours))
+            else:
+                ahead = ts + (timedelta(hours=4) if h == "4h" else timedelta(hours=12))
             market = "BTC/USDT"
             ohlcv = ex.fetch_ohlcv(market, timeframe="1m", since=int((ahead.timestamp() - 60 * 5) * 1000), limit=10)
             if not ohlcv:
@@ -171,7 +186,23 @@ def collect_outcomes(horizon: str, provider: Optional[str] = None) -> Dict[str, 
     from ..infra.db import fetch_predictions_for_cv
     provider = provider or os.getenv("CCXT_PROVIDER", "binance")
 
-    rows = fetch_predictions_for_cv(horizon, min_age_hours=1.0 if horizon == "1h" else (4.0 if horizon == "4h" else 12.0))
+    # Determine maturity window by horizon
+    h = str(horizon).lower()
+    if h.endswith("m"):
+        try:
+            m = float(h[:-1])
+        except Exception:
+            m = 30.0
+        min_age_hours = max(0.25, m / 60.0 + 0.05)
+    elif h.endswith("h"):
+        try:
+            hh = float(h[:-1])
+        except Exception:
+            hh = 1.0
+        min_age_hours = max(0.25, hh)
+    else:
+        min_age_hours = 12.0
+    rows = fetch_predictions_for_cv(horizon, min_age_hours=min_age_hours)
     outcomes: List[Outcome] = []
     for run_id, hz, created_at, y_hat, pi_low, pi_high, per_model in rows:
         y_true = _get_y_true(created_at, hz, provider)

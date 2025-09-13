@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import os
+from ..infra.db import fetch_agent_config
 
 
 @dataclass
@@ -46,11 +47,20 @@ def run(inp: TradeRecommendInput) -> Dict:
 
     side = "LONG" if dir_is_long else "SHORT"
 
-    # Volatility-aware SL/TP distances
-    k_atr = 1.5 if side == "LONG" else 1.5
+    # Volatility-aware SL/TP distances (configurable)
+    cfg = fetch_agent_config("TradeRecommend") or {"parameters": {}}
+    params = cfg.get("parameters") if isinstance(cfg, dict) else {}
+    try:
+        k_atr = float(os.getenv("TR_K_ATR", str(params.get("k_atr", 1.5))))
+    except Exception:
+        k_atr = 1.5
     sl_dist = k_atr * atr
-    # Aim R:R around 1.6
-    tp_dist = 1.6 * sl_dist
+    # Aim R:R target (configurable)
+    try:
+        rr_target = float(os.getenv("TR_RR_TARGET", str(params.get("rr_target", 1.6))))
+    except Exception:
+        rr_target = 1.6
+    tp_dist = rr_target * sl_dist
 
     entry = p
     sl = entry - sl_dist if side == "LONG" else entry + sl_dist

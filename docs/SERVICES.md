@@ -9,6 +9,7 @@ Core runtime
 - bot: Telegram bot for subscriptions (Stars), direct messages, promo codes, and user insights collection. It can publish forecasts either to a channel or as DMs.
 - trigger_agent: lightweight 24/7 watcher of order flow and news. Emits trigger messages into Redis (queue `RT_TRIGGER_QUEUE`, default `rt:triggers`). Triggers: `VOL_SPIKE`, `DELTA_SPIKE`, `NEWS`.
 - rt_master: on‑demand reactor that waits for trigger events and runs a short‑horizon Master flow (features → models+ensemble → trade card). Publishes concise real‑time alerts to Telegram.
+  - Uses regime/event‑aware trust weights; integrates `event_study` for NEWS.
 
 Storage and cache
 
@@ -33,6 +34,16 @@ Optional helpers
 - windmill: Low‑code runner (kept for future ops automations). UI at http://localhost:8000 (already exposed).
 - order flow (in‑pipeline): optional collector that fetches recent trades via CCXT and enriches features with OFI/дельта. Enable with ENABLE_ORDER_FLOW=1.
   - For real‑time, `trigger_agent` uses the same CCXT collector (REST or ccxt.pro WS) in rolling 60s windows.
+  - L2 triggers: walls/imbalance near mid (configurable thresholds via ENV).
+
+Ops utilities
+
+- rt_paper_adapt: updates model trust weights based on realized paper PnL (EMA smoothing).
+  - Run: `python -m pipeline.ops.rt_paper_adapt` (планировщик вызывает автоматически).
+- trade_reco_tune: предлагает обновления параметров `TradeRecommend` (k_ATR, RR) на основе статистики SL/TP в paper.
+  - Run: `python -m pipeline.ops.trade_reco_tune` — пишет новую активную версию в `agent_configurations`.
+- synthetic_trigger: публикует тестовый RT‑триггер в очередь.
+  - Run: `python -m pipeline.rt.synthetic_trigger VOL_SPIKE --meta '{"ratio":4.2}'`.
 - pattern discovery (Airflow): weekly DAG `pattern_discovery_weekly` runs PatternDiscoveryAgent to propose new entries for `technical_patterns` (by default in dry‑run mode).
 - memory compress (Airflow): monthly DAG `memory_compress_monthly` aggregates recent run summaries into concise lessons (`agent_lessons` table).
 - cognitive architect (Airflow): monthly DAG `cognitive_architect_monthly` proposes updated prompts/configs; writes new versions to `agent_configurations`.
@@ -102,6 +113,7 @@ MCP tools available
 - `run_regime_detection(features_s3)` → `{label, confidence, features}`
 - `run_similarity_search(features_s3)` → `{topk: [{period, distance}, ...]}`
 - `run_models_and_ensemble(features_s3, horizon)` → `ensemble, preds, last_price, atr`
+  - Доп. параметры: `trust_weights` (dict), `neighbors` (list) — используются для контекстного взвешивания в RT режиме.
 - `get_recent_run_summaries(n)` → recent memory items for context
 - `run_event_study(event_type, k?, window_hours?, symbol?, provider?)` → basic study summary
 - `run_pattern_discovery(...)` → stub (returns `{status: 'not-implemented'}` in Phase 1)
@@ -119,3 +131,13 @@ Common issues
 - Ports already in use: change host ports in docker-compose for grafana/prometheus/flowise/pushgateway.
 - Flowise API unset: LLM calls are skipped with warnings; the rest of the pipeline still runs.
 - No real‑time alerts: check that `trigger_agent` is running; verify Redis has activity on `rt:triggers` (e.g. `redis-cli LLEN rt:triggers`). Lower `TRIGGER_VOL_SPIKE_FACTOR` or `TRIGGER_DELTA_BASE_MIN` to generate test triggers.
+
+Trigger thresholds calibration
+
+- Start in staging with conservative defaults:
+  - `TRIGGER_VOL_SPIKE_FACTOR=3.0..5.0`, `TRIGGER_DELTA_BASE_MIN=20..50` (BTC), `TRIGGER_L2_WALL_MIN_BASE=50..150`.
+  - `TRIGGER_L2_IMBALANCE_RATIO=2.0` for top‑50 levels.
+  - `TRIGGER_NEWS_IMPACT_MIN=0.7`.
+- Observe rates in Grafana/Prometheus (job `rt_trigger`, metrics `fired_*`).
+- Adjust down until you see 3–10 RT alerts/сутки в рабочее время. Для ночи — чуть строже пороги.
+- Включите адаптацию `TRIGGER_ADAPTIVE=1`: приоритеты триггеров будут плавно смещаться под PnL paper‑торговли.

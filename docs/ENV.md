@@ -276,6 +276,13 @@ Real‑Time режим (Trigger → Master)
 - TRIGGER_NEWS_LOOKBACK_SEC — окно поиска свежих новостей (по умолчанию 120 сек).
 - TRIGGER_ADAPTIVE — адаптация порогов по результатам paper PnL (по умолчанию 1).
 - TRIGGER_ADAPT_EVERY_SEC — период пересчёта приоритетов триггеров (по умолчанию 300 сек).
+- TRIGGER_L2_ENABLE — включить L2‑триггеры по стакану (по умолчанию 1).
+- TRIGGER_L2_DEPTH_LEVELS — глубина уровней для суммирования (по умолчанию 50).
+- TRIGGER_L2_NEAR_BPS — радиус близости к mid для «стены» в б.п. (по умолчанию 10 б.п.).
+- TRIGGER_L2_WALL_MIN_BASE — минимальный размер «стены» в базовой валюте (по умолчанию 50.0 BTC).
+- TRIGGER_L2_IMBALANCE_RATIO — порог дисбаланса суммарных bid/ask в топ‑K (по умолчанию 2.0).
+- TRIGGER_NEWS_POLL_SEC — как часто триггер‑агент опрашивает новости (по умолчанию 120 сек).
+- TRIGGER_NEWS_WINDOW_H — окно новостей при лёгком опросе (по умолчанию 1 час).
 
 - RT_HORIZON_DEFAULT_MIN — дефолтный горизонт real‑time прогноза в минутах (по умолчанию 30).
 - RT_HORIZON_VOL_SPIKE_MIN — горизонт для VOL_SPIKE (по умолчанию 30).
@@ -286,10 +293,25 @@ Real‑Time режим (Trigger → Master)
 - RT_NEWS_WINDOW_H — окно новостей для расчёта признаков (по умолчанию 6 часов).
 - RT_VALID_FOR_MIN — время валидности карточки real‑time сигнала (по умолчанию 30 мин).
 
+Telegram публикация
+
+- TELEGRAM_RT_CHAT_ID — при задании RT‑сигналы отправляются в отдельный чат/канал, иначе используется общий `TELEGRAM_CHAT_ID`/DM.
+
 Paper Trading (цикличность и исполнение)
 
 - PAPER_EXEC_LOOKBACK_DAYS — за сколько дней подбирать новые рекомендации для открытия в исполнителе (по умолчанию 3).
 - PAPER_RISK_PER_TRADE — риск на сделку в paper (доля от equity, по умолчанию 0.005).
+
+TradeRecommend (тюнинг)
+
+- TR_K_ATR — множитель ATR для SL (по умолчанию 1.5; может переопределяться автотюнером через agent_configurations).
+- TR_RR_TARGET — целевой R:R (по умолчанию 1.6; может переопределяться автотюнером через agent_configurations).
+- TR_TUNE_WINDOW_DAYS — окно для тюнера по paper (по умолчанию 30).
+
+Feedback/Outcomes
+
+- RT_OUTCOMES_HORIZONS — список RT горизонтов для сбора outcomes (по умолчанию `30m,60m`).
+- RUN_PAPER_ADAPT — включить адаптацию trust‑весов по paper PnL в планировщике (по умолчанию 1).
 
 Кэш y_true для ускорения динамического взвешивания
 

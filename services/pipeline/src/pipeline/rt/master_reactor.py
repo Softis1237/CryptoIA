@@ -17,17 +17,20 @@ from ..infra.db import (
     upsert_explanations,
     upsert_trade_suggestion,
 )
+from ..infra.db import fetch_model_trust_regime_event, fetch_model_trust_regime
 from ..mcp.client import call_tool
 from ..reasoning.chart_reasoning import ChartReasoningInput as _CRInput
 from ..reasoning.chart_reasoning import run as run_chart_reasoning
 from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
-from ..trading.publish_telegram import publish_message
+from ..trading.publish_telegram import publish_message, publish_message_to
 from ..data.ingest_prices import IngestPricesInput, run as run_prices
 from ..data.ingest_news import IngestNewsInput, run as run_news
 from ..features.features_calc import FeaturesCalcInput, run as run_features
 from .queue import pop_trigger
+from ..infra.metrics import push_values
+from ..infra.health import start_background as start_health_server
 
 
 @dataclass
@@ -68,6 +71,19 @@ def _short_reason(t: Trigger) -> str:
     if t.type == "NEWS":
         return f"Триггер: новость ({t.meta.get('source','')}, score={float(t.meta.get('impact_score',0.0)):.2f})"
     return f"Триггер: {t.type}"
+
+
+def _classify_news_event(title: str) -> str:
+    s = (title or "").upper()
+    if "ETF" in s:
+        return "ETF_APPROVAL"
+    if "SEC" in s or "LAWSUIT" in s or "LAWSUIT" in s:
+        return "SEC_ACTION"
+    if "HACK" in s or "EXPLOIT" in s:
+        return "HACK"
+    if "FORK" in s or "HARD FORK" in s:
+        return "FORK"
+    return "OTHER"
 
 
 def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
@@ -130,7 +146,21 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     topk = neighbors.get("topk") or []
     hmin = _horizon_for(trigger)
     hz = f"{hmin}m"
-    out = call_tool("run_models_and_ensemble", {"features_s3": features_s3, "horizon": hz}) or {}
+    # Trust weights (regime-based; optionally event-based for NEWS)
+    trust = fetch_model_trust_regime(str(regime.get("label", "range")), "4h")  # fallback trust from 4h
+    event_type = None
+    if trigger.type == "NEWS":
+        event_type = _classify_news_event(str(trigger.meta.get("title", "")))
+        try:
+            ev_trust = fetch_model_trust_regime_event(str(regime.get("label", "range")), "4h", event_type)
+            if ev_trust:
+                trust.update(ev_trust)
+        except Exception:
+            pass
+    out = call_tool(
+        "run_models_and_ensemble",
+        {"features_s3": features_s3, "horizon": hz, "neighbors": topk, "trust_weights": trust},
+    ) or {}
     if not out:
         try:
             from ..models.models import ModelsInput as _MIn, run as _run_models
@@ -138,7 +168,7 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
 
             mm = _run_models(_MIn(features_path_s3=features_s3, horizon_minutes=hmin))
             preds = [p.model_dump() for p in mm.preds]
-            ee = _run_ens(_EIn(preds=preds, horizon=hz))
+            ee = _run_ens(_EIn(preds=preds, horizon=hz, trust_weights=trust, neighbors=topk))
             out = {
                 "ensemble": {
                     "y_hat": float(ee.y_hat),
@@ -174,6 +204,14 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
         ta = run_chart_reasoning(_CRInput(features_path_s3=features_s3))
     except Exception:
         ta = {"technical_sentiment": "neutral", "confidence_score": 0.5, "key_observations": []}
+
+    # Event study for NEWS (optional)
+    ev_summary = None
+    if trigger.type == "NEWS" and event_type and event_type != "OTHER":
+        try:
+            ev_summary = call_tool("run_event_study", {"event_type": event_type, "k": 10, "window_hours": 24})
+        except Exception:
+            ev_summary = None
 
     # 5) Trade card
     tri = TradeRecommendInput(
@@ -214,16 +252,41 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
         + (f"Тех.сентимент: {ta.get('technical_sentiment','n/a')} (conf≈{float(ta.get('confidence_score',0.0)):.2f})\n" if ta else "")
         + f"p_up≈{float(e.get('proba_up',0.5)):.2f}, ŷ≈{float(e.get('y_hat',0.0)):.2f}\n"
         + f"Рекомендация: {card.get('side')} lev×{card.get('leverage')} SL={card.get('stop_loss')} TP={card.get('take_profit')}\n"
+        + (f"Событие: {event_type}\n" if event_type else "")
+        + (f"EventStudy: n={ev_summary.get('n')} avg={ev_summary.get('avg_change'):.3f} p_pos={ev_summary.get('p_positive'):.2f}\n" if isinstance(ev_summary, dict) and ev_summary.get('n') else "")
         + f"Горизонт: ~{hmin} мин"
     )
     upsert_explanations(run_id, md, [])
 
     # Optional: publish concise Telegram alert
+    # Publish only if not NO-TRADE and verification passed
     try:
-        publish_message(md)
+        if card.get("side") != "NO-TRADE" and ok:
+            rt_chat = os.getenv("TELEGRAM_RT_CHAT_ID")
+            if rt_chat:
+                publish_message_to(rt_chat, md)
+            else:
+                publish_message(md)
+        else:
+            try:
+                push_values(job="rt_master", values={"ignored": 1.0}, labels={"type": trigger.type})
+            except Exception:
+                pass
     except Exception:
         pass
 
+    # Metrics
+    try:
+        push_values(
+            job="rt_master",
+            values={
+                "latency_sec": float(max(0, int(datetime.now(timezone.utc).timestamp()) - int(trigger.ts or 0))),
+                "p_up": float(e.get("proba_up", 0.0) or 0.0),
+            },
+            labels={"type": trigger.type, "horizon": hz},
+        )
+    except Exception:
+        pass
     return {
         "run_id": run_id,
         "slot": slot,
@@ -239,6 +302,7 @@ def main() -> None:
         init_sentry()
     except Exception:
         pass
+    start_health_server()
     logger.info("RT MasterReactor started; waiting for triggers…")
     while True:
         ev = pop_trigger(timeout_s=5)

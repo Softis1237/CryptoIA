@@ -97,19 +97,35 @@ def executor_once(run_id: Optional[str] = None):
         with conn.cursor() as cur:
             if run_id:
                 cur.execute(
-                    "SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE run_id=%s",
+                    "SELECT run_id, side, entry_zone, leverage, sl, tp, times_json FROM trades_suggestions WHERE run_id=%s",
                     (run_id,),
                 )
                 sug = cur.fetchone()
                 if not sug:
                     logger.info("No such suggestion")
                     return
-                _open_from_suggestion(cur, acc_id, sug)
+                # Validity check
+                try:
+                    vt = (sug[6] or {}).get("valid_until") if isinstance(sug[6], dict) else None
+                    if vt:
+                        import dateutil.parser  # type: ignore
+                        if _now_utc() > dateutil.parser.isoparse(str(vt)):
+                            logger.info(f"Suggestion {run_id} is expired; skipping")
+                            return
+                except Exception:
+                    pass
+                _open_from_suggestion(cur, acc_id, sug[:6])
                 return
             # Batch open from recent suggestions window
             lookback_days = float(os.getenv("PAPER_EXEC_LOOKBACK_DAYS", "3"))
             cur.execute(
-                "SELECT run_id, side, entry_zone, leverage, sl, tp FROM trades_suggestions WHERE created_at >= now() - (%s || ' days')::interval ORDER BY created_at ASC",
+                """
+                SELECT run_id, side, entry_zone, leverage, sl, tp
+                FROM trades_suggestions
+                WHERE created_at >= now() - (%s || ' days')::interval
+                  AND (times_json->>'valid_until' IS NULL OR (times_json->>'valid_until')::timestamptz >= now())
+                ORDER BY created_at ASC
+                """,
                 (str(lookback_days),),
             )
             rows = cur.fetchall() or []

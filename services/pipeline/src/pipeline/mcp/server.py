@@ -143,7 +143,16 @@ def tool_run_models_and_ensemble(params: Dict[str, Any]) -> Dict[str, Any]:
     hmin = _parse_horizon_minutes(hz)
     m = _run_models(_ModelsInput(features_path_s3=s3, horizon_minutes=hmin))
     preds = [p.model_dump() for p in m.preds]
-    e = _run_ensemble(_EnsembleInput(preds=preds, horizon=(str(hz) if isinstance(hz, str) else None)))
+    trust = params.get("trust_weights") or None
+    neighbors = params.get("neighbors") or None
+    e = _run_ensemble(
+        _EnsembleInput(
+            preds=preds,
+            trust_weights=trust if isinstance(trust, dict) else None,
+            horizon=(str(hz) if isinstance(hz, str) else None),
+            neighbors=neighbors if isinstance(neighbors, list) else None,
+        )
+    )
     return {
         "ensemble": {
             "y_hat": float(e.y_hat),

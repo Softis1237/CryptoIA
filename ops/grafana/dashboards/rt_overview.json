@@ -1,0 +1,94 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "iteration": 1680000000000,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "RT Triggers (last 30m)",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "sum_over_time(pipeline_value{name=~\"fired_.*\",job=\"rt_trigger\"}[30m])",
+          "legendFormat": "total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Triggers by type",
+      "gridPos": {"x": 8, "y": 0, "w": 16, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (name) (increase(pipeline_value{name=~\"fired_.*\",job=\"rt_trigger\"}[5m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RT latency (sec)",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "avg by (type,horizon) (pipeline_value{name=\"latency_sec\",job=\"rt_master\"})",
+          "legendFormat": "{{type}}/{{horizon}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RT p_up",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "avg by (type,horizon) (pipeline_value{name=\"p_up\",job=\"rt_master\"})",
+          "legendFormat": "{{type}}/{{horizon}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ignored RT (no-trade/failed verify)",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by () (increase(pipeline_value{name=\"ignored\",job=\"rt_master\"}[15m]))",
+          "legendFormat": "ignored",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Paper equity (if pushed)",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "pipeline_value{name=\"equity\",job=\"paper\"}",
+          "legendFormat": "equity",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 37,
+  "style": "dark",
+  "tags": ["rt"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "RT Overview",
+  "uid": "rt-overview",
+  "version": 1
+}
+
