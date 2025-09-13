@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ..infra.s3 import download_bytes, upload_bytes
 from .features_cpd import enrich_with_cpd_simple
 from .features_kats import enrich_with_kats
+from .features_patterns import detect_patterns, load_patterns_from_db
 
 
 class FeaturesCalcInput(BaseModel):
@@ -394,6 +395,22 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     df["onchain_miners_balance"] = oc_map.get("miners_balance_sum", 0.0)
     df["onchain_transfers_vol"] = oc_map.get("transfers_volume_sum", 0.0)
 
+    # Technical pattern features (rule-based detection over OHLC series)
+    try:
+        patterns = load_patterns_from_db()
+    except Exception:
+        patterns = []
+    try:
+        pat_map = detect_patterns(df, patterns)
+        for _col, _ser in pat_map.items():
+            try:
+                df[_col] = _ser.fillna(0).astype(float)
+            except Exception:
+                df[_col] = 0.0
+    except Exception:
+        # keep pipeline robust even if pattern detection fails
+        pass
+
     # Social metrics (tweets/posts per minute in last window)
     if payload.social_signals:
         try:
@@ -616,6 +633,15 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         "onchain_sopr",
         "onchain_miners_balance",
         "onchain_transfers_vol",
+        # Technical pattern flags (if present)
+        *([c for c in [
+            "pat_hammer",
+            "pat_shooting_star",
+            "pat_engulfing_bull",
+            "pat_engulfing_bear",
+            "pat_morning_star",
+            "pat_score",
+        ] if c in df.columns]),
         "tweets_per_min",
         "reddit_per_min",
         "tweets_burst",

@@ -1177,3 +1177,38 @@ def fetch_recent_run_summaries(n: int = 3) -> list[dict]:
                     }
                 )
     return out
+
+
+# --- Technical patterns knowledge base -------------------------------------
+
+def fetch_technical_patterns() -> list[dict]:
+    """Return list of technical pattern definitions from DB.
+
+    Each item has keys: name, category, timeframe, definition, description, source, confidence_default.
+    """
+    sql = (
+        "SELECT name, category, timeframe, definition_json, description, source, confidence_default "
+        "FROM technical_patterns ORDER BY name"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(sql)
+                rows = cur.fetchall() or []
+            except Exception:
+                rows = []
+            for r in rows:
+                name, category, timeframe, definition, description, source, conf = r
+                out.append(
+                    {
+                        "name": str(name),
+                        "category": str(category or ""),
+                        "timeframe": str(timeframe or ""),
+                        "definition": definition or {},
+                        "description": str(description or ""),
+                        "source": str(source or ""),
+                        "confidence_default": float(conf or 0.0),
+                    }
+                )
+    return out

@@ -72,6 +72,8 @@ MCP tools available
 - `run_similarity_search(features_s3)` → `{topk: [{period, distance}, ...]}`
 - `run_models_and_ensemble(features_s3, horizon)` → `ensemble, preds, last_price, atr`
 - `get_recent_run_summaries(n)` → recent memory items for context
+- `run_event_study(event_type, k?, window_hours?, symbol?, provider?)` → basic study summary
+- `run_pattern_discovery(...)` → stub (returns `{status: 'not-implemented'}` in Phase 1)
 
 Health and validation
 
