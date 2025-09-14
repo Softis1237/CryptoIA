@@ -45,7 +45,9 @@ docker compose up -d --build
 docker compose run --rm pipeline python -m pipeline.orchestration.predict_release --slot=manual
 Или воспользуйтесь DAG: USE_COORDINATOR=1 и python -m pipeline.orchestration.agent_flow --slot=manual.
     1. Проверка здоровья: сервис поднимает HTTP эндпоинт http://localhost:8000/health. Он возвращает `OK`, если Postgres и S3 доступны; в противном случае ответит `FAIL`. Дополнительно смотрите логи контейнеров (`docker compose logs -f pipeline scheduler`) и метрики (http://localhost:9091/metrics).
-    2. Режимы торговли:
+
+    2. Анализ: `make analyze ARGS="price <path>"` — выводит последние метрики (price, orderflow, supply-demand, patterns).
+    3. Режимы торговли:
     3. Бумажная торговля: включайте DRY_RUN=1 (по умолчанию) и используйте python -m pipeline.trading.paper_trading executor_once для открытия позиций. Все сделки записываются в paper_positions и связанные таблицы.
     4. Живая торговля: установите EXCHANGE_API_KEY, EXCHANGE_SECRET, EXCHANGE_TYPE и DRY_RUN=0. Скрипт python -m pipeline.trading.executor_live откроет сделку из последнего предложения. Скрипт python -m pipeline.trading.risk_loop_live следит за trailing‑stop и перемещает стоп при улучшении цены (см. docs/TRADING.md).
     5. Обучение ML моделей: для использования LGBM/XGBoost/CatBoost моделей активируйте стэкинг (ENABLE_STACKING=1) и выполняйте python -m pipeline.ops.retrain. Существует Flow ops/windmill/flows/train_ml_register.py для автоматизации.
