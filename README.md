@@ -17,6 +17,7 @@ orchestration/	Сценарии запуска (predict_release, agent_flow), п
 agents/        Базовые классы и координатор агентов.
 mcp/           Мини‑сервер и клиент MCP для безопасного вызова инструментов.
 utils/         Общие утилиты (калибровка, текст).
+telegram_bot/  Интерактивный Telegram‑бот: /start, /help, настройки.
 infra/	База данных (Postgres + pgvector), кеш Redis, s3/minio, логи и метрики.
 migrations/	SQL‑миграции для PostgreSQL (таблицы для цен, сигналов, прогнозов, торговых позиций и др.).
 ops/	Инфраструктура и наблюдаемость (Prometheus, Grafana, алерты, Windmill flows). Airflow DAGи перенесены в ops/archive/airflow как опциональные.
