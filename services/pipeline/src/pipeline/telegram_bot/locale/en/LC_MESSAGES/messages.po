@@ -1,0 +1,18 @@
+msgid ""
+msgstr ""
+"Language: en\n"
+
+msgid "Paper: account not found"
+msgstr "Paper: account not found"
+
+msgid "No equity data for the week"
+msgstr "No equity data for the week"
+
+msgid "Paper: Equity {days}d. Start={start_eq}"
+msgstr "Paper: Equity {days}d. Start={start_eq}"
+
+msgid "BTC {slot}: 4h/12h forecast"
+msgstr "BTC {slot}: 4h/12h forecast"
+
+msgid "BTC {slot}: risk charts"
+msgstr "BTC {slot}: risk charts"
