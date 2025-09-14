@@ -1,3 +1,7 @@
+from .messages import _t
+
+__all__ = ["_t"]
+
 """Пакет Telegram-бота CryptoIA."""
 
 from .bot import build_main_menu, main
