@@ -132,3 +132,7 @@ Windmill Flows (рекомендованные):
   - `/affapprove <partner_user_id> [percent] [request_id]` — одобрить заявку и выдать код партнёру; при передаче `request_id` заявка помечается approved.
   - `/affrequests [status]` — показать заявки (по умолчанию pending).
   - `/affmark <request_id> <approved|rejected>` — изменить статус заявки.
+
+Подробное описание клавиатур, команд и переменных окружения бота приведено в [TELEGRAM_BOT.md](TELEGRAM_BOT.md).
+
+  - `/affmark <request_id> <approved|rejected>` — изменить статус заявки.
