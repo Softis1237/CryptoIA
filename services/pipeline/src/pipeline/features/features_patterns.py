@@ -59,8 +59,45 @@ def detect_patterns(df: pd.DataFrame, patterns: List[dict] | None = None) -> Dic
     close3_above_mid1 = c > ((o2 + c2) / 2.0)
     morning_star = (c1_red & small_mid & c3_green & close3_above_mid1).astype(int)
 
+    # Doji
+    range_total = h - l + eps
+    doji = (body <= (range_total * 0.1)).astype(int)
+
+    # Harami (bullish / bearish)
+    harami_bull = (
+        prev_red
+        & green
+        & (o >= c1)
+        & (c <= o1)
+        & (body < body1)
+    ).astype(int)
+    harami_bear = (
+        prev_green
+        & red
+        & (o <= c1)
+        & (c >= o1)
+        & (body < body1)
+    ).astype(int)
+
+    # Three White Soldiers
+    green2 = c2 > o2
+    open1_in2 = (o1 > o2) & (o1 < c2)
+    open_in1 = (o > o1) & (o < c1)
+    close_progress = (c2 < c1) & (c1 < c)
+    tws = (green2 & prev_green & green & open1_in2 & open_in1 & close_progress).astype(int)
+
     # Aggregate score (candlestick)
-    score = hammer + shooting + bull_engulf + bear_engulf + morning_star
+    score = (
+        hammer
+        + shooting
+        + bull_engulf
+        + bear_engulf
+        + morning_star
+        + doji
+        + harami_bull
+        + harami_bear
+        + tws
+    )
 
     out = {
         "pat_hammer": hammer,
@@ -68,7 +105,10 @@ def detect_patterns(df: pd.DataFrame, patterns: List[dict] | None = None) -> Dic
         "pat_engulfing_bull": bull_engulf,
         "pat_engulfing_bear": bear_engulf,
         "pat_morning_star": morning_star,
-        "pat_score": score,
+        "pat_doji": doji,
+        "pat_harami_bull": harami_bull,
+        "pat_harami_bear": harami_bear,
+        "pat_three_white_soldiers": tws,
     }
 
     # Chart patterns (evaluate over recent window; set flag at last index)
@@ -209,32 +249,63 @@ def detect_patterns(df: pd.DataFrame, patterns: List[dict] | None = None) -> Dic
         out["pat_double_bottom_recent"].iloc[-1] = dbl_bot
         out["pat_head_and_shoulders_recent"].iloc[-1] = hns
 
-        # Triangles / Wedges (coarse): compare early vs late range and slopes
+        # Triangles / Wedges / Flags (coarse)
         try:
             import numpy as np
             hw = df["high"].astype(float).tail(W).reset_index(drop=True)
             lw = df["low"].astype(float).tail(W).reset_index(drop=True)
+            cw = df["close"].astype(float).tail(W).reset_index(drop=True)
+
             def _slope(x: pd.Series) -> float:
                 xs = np.arange(len(x))
                 A = np.vstack([xs, np.ones(len(xs))]).T
                 m, _ = np.linalg.lstsq(A, x.values, rcond=None)[0]
                 return float(m)
+
             s_hi = _slope(hw)
             s_lo = _slope(lw)
-            # width early vs late
-            k = max(10, int(W/3))
+            s_full = _slope(cw)
+            k = max(10, int(W / 3))
             width_start = float(hw.head(k).max() - lw.head(k).min())
             width_end = float(hw.tail(k).max() - lw.tail(k).min())
             narrowing = (width_end / max(1e-9, width_start)) < 0.6
             tri = (s_hi < 0) and (s_lo > 0) and narrowing
             wedge = ((s_hi > 0 and s_lo > 0) or (s_hi < 0 and s_lo < 0)) and narrowing
+
+            # Flag: strong trend followed by small parallel channel
+            s_hi_last = _slope(hw.tail(k))
+            s_lo_last = _slope(lw.tail(k))
+            parallel = (
+                (s_hi_last * s_lo_last > 0)
+                and (abs(s_hi_last - s_lo_last) / max(1e-9, abs(s_hi_last) + abs(s_lo_last)) < 0.2)
+            )
+            consolidation = (
+                abs(s_hi_last) < abs(s_full) * 0.5
+                and abs(s_lo_last) < abs(s_full) * 0.5
+            )
+            flag = (abs(s_full) > 0.01) and parallel and consolidation
+
             zeros2 = pd.Series(0, index=df.index)
             out["pat_triangle_recent"] = zeros2.copy()
             out["pat_wedge_recent"] = zeros2.copy()
+            out["pat_flag_recent"] = zeros2.copy()
             out["pat_triangle_recent"].iloc[-1] = int(1 if tri else 0)
             out["pat_wedge_recent"].iloc[-1] = int(1 if wedge else 0)
+            out["pat_flag_recent"].iloc[-1] = int(1 if flag else 0)
         except Exception:
             pass
+
+    # Final score with all patterns
+    score = (
+        score
+        + out.get("pat_double_top_recent", pd.Series(0, index=df.index))
+        + out.get("pat_double_bottom_recent", pd.Series(0, index=df.index))
+        + out.get("pat_head_and_shoulders_recent", pd.Series(0, index=df.index))
+        + out.get("pat_triangle_recent", pd.Series(0, index=df.index))
+        + out.get("pat_wedge_recent", pd.Series(0, index=df.index))
+        + out.get("pat_flag_recent", pd.Series(0, index=df.index))
+    )
+    out["pat_score"] = score
 
     return out
 
