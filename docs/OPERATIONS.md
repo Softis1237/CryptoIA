@@ -1,5 +1,7 @@
 ## Операции и наблюдаемость
 
+Подробнее о Telegram-боте см. TELEGRAM_BOT.md.
+
 Запуск стека:
 
 ```
@@ -19,6 +21,15 @@ docker compose run --rm pipeline python -m pipeline.orchestration.agent_flow --s
 
 - HTTP эндпоинт `http://localhost:8000/health` возвращает `OK`, если доступны Postgres и S3.
 - При `FAIL` проверьте логи контейнеров и настройки подключения.
+
+Анализ последних метрик:
+
+```
+make analyze ARGS="price data/prices.parquet"
+```
+
+Выведет JSON с последними индикаторами цены. Аналогично доступны команды `orderflow`, `supply-demand` и `patterns` для соответствующих данных.
+
 
 Метрики Prometheus:
 - Укажите `PROM_PUSHGATEWAY_URL`.
@@ -121,4 +132,8 @@ Windmill Flows (рекомендованные):
   - `/affstats [partner_user_id]` — показать статистику партнёра (если без аргументов, для текущего пользователя).
   - `/affapprove <partner_user_id> [percent] [request_id]` — одобрить заявку и выдать код партнёру; при передаче `request_id` заявка помечается approved.
   - `/affrequests [status]` — показать заявки (по умолчанию pending).
+  - `/affmark <request_id> <approved|rejected>` — изменить статус заявки.
+
+Подробное описание клавиатур, команд и переменных окружения бота приведено в [TELEGRAM_BOT.md](TELEGRAM_BOT.md).
+
   - `/affmark <request_id> <approved|rejected>` — изменить статус заявки.
