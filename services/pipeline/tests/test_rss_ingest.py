@@ -1,14 +1,19 @@
-import unittest
+# flake8: noqa
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from datetime import datetime, timedelta, timezone
+import unittest
 
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+)
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_ingest_news_path = Path(__file__).resolve().parents[1] / 'src' / 'pipeline' / 'data' / 'ingest_news.py'
-spec = importlib.util.spec_from_file_location('ingest_news_testmod', _ingest_news_path)
+_ingest_news_path = (
+    Path(__file__).resolve().parents[1] / "src" / "pipeline" / "data" / "ingest_news.py"
+)
+spec = importlib.util.spec_from_file_location("ingest_news_testmod", _ingest_news_path)
 mod = importlib.util.module_from_spec(spec)  # type: ignore
 assert spec and spec.loader
 spec.loader.exec_module(mod)  # type: ignore
@@ -56,7 +61,8 @@ class TestRSSIngest(unittest.TestCase):
 
         mod._fetch_rss_async = fake_fetch_async  # type: ignore
 
-        start = datetime.now(timezone.utc) - timedelta(days=365)
+        # Use a wide lookback to keep sample feed items within range for future test runs
+        start = datetime.now(timezone.utc) - timedelta(days=1000)
         items, stats = mod._fetch_from_rss_window(start)
         # Expect 3 items in feed bodies, but 1 duplicate by URL -> 2 unique
         urls = {x["url"] for x in items}

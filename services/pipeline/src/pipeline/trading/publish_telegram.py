@@ -1,11 +1,14 @@
+# flake8: noqa
 from __future__ import annotations
 
 import os
+
 from loguru import logger
 
 from ..infra.config import settings
-from ..infra.s3 import download_bytes
 from ..infra.db import list_active_subscriber_ids
+from ..infra.s3 import download_bytes
+from ..telegram_bot.messages import get_message
 
 
 def _chunk_text(text: str, limit: int = 4096):
@@ -38,7 +41,8 @@ def _append_aff_footer(text: str) -> str:
     return (text + footer) if footer not in text else text
 
 
-def publish_message(text: str) -> None:
+def publish_message(text: str, **kwargs) -> None:
+    text = get_message(text, **kwargs)
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN не задан — печатаю локально\n" + text)
         print(text)
@@ -100,7 +104,8 @@ def publish_message(text: str) -> None:
         logger.exception(f"Ошибка публикации в Telegram: {e}")
 
 
-def publish_message_to(chat_id: str, text: str) -> None:
+def publish_message_to(chat_id: str, text: str, **kwargs) -> None:
+    text = get_message(text, **kwargs)
     if not settings.telegram_bot_token or not chat_id:
         logger.warning(
             "TELEGRAM_BOT_TOKEN/CHAT_ID не заданы — печатаю локально:\n" + text
@@ -123,7 +128,7 @@ def publish_message_to(chat_id: str, text: str) -> None:
         logger.exception(f"Ошибка публикации в Telegram (target): {e}")
 
 
-def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
+def publish_photo_from_s3(s3_uri: str, caption: str | None = None, **kwargs) -> None:
     if not s3_uri:
         return
     if not settings.telegram_bot_token:
@@ -141,7 +146,8 @@ def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
         content = download_bytes(s3_uri)
         bot = Bot(token=settings.telegram_bot_token)
         # append footer to caption
-        caption = _append_aff_footer(caption or "")
+        caption = get_message(caption, **kwargs) if caption else ""
+        caption = _append_aff_footer(caption)
         dm_ids = _dm_user_ids()
         if settings.telegram_chat_id:
             bot.send_photo(

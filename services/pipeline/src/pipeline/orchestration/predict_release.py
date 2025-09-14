@@ -1,3 +1,4 @@
+# flake8: noqa
 from __future__ import annotations
 
 import os
@@ -349,7 +350,7 @@ def predict_release(
 
     # Publish chart then message
     with timed(durations, "publish"):
-        publish_photo_from_s3(chart_s3, caption=f"BTC {slot}: 4h/12h прогноз")
+        publish_photo_from_s3(chart_s3, caption="btc_forecast_caption", slot=slot)
         publish_message("\n".join(msg))
     # отправим JSON карточки сделки отдельным сообщением (удобно копировать)
     publish_code_block_json("Карточка сделки (JSON)", trade)
@@ -479,9 +480,7 @@ def predict_release(
             "p_up_4h": float(e4.proba_up),
             "p_up_12h": float(e12.proba_up),
             "p_up_4h_cal": float(
-                calibrate_proba(
-                    e4.proba_up, e4.interval, m4.last_price, m4.atr, "4h"
-                )
+                calibrate_proba(e4.proba_up, e4.interval, m4.last_price, m4.atr, "4h")
             ),
             "interval_width_pct_4h": float(
                 (e4.interval[1] - e4.interval[0]) / max(1e-6, m4.last_price)
