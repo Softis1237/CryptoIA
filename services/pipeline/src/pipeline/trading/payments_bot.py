@@ -165,7 +165,7 @@ SUPPORT_URL = os.getenv("SUPPORT_URL", "")
 
 # Optional external affiliate/exchange link (non-intrusive CTA in affiliate menu)
 EXTERNAL_AFF_LINK_URL = os.getenv("EXTERNAL_AFF_LINK_URL", "")
-EXTERNAL_AFF_LINK_TEXT = os.getenv("EXTERNAL_AFF_LINK_TEXT", "💠 Бонусы на бирже")
+EXTERNAL_AFF_LINK_TEXT = os.getenv("EXTERNAL_AFF_LINK_TEXT", "💠 Бонусы")
 
 # Branding / UX configuration
 BRAND_NAME = os.getenv("BRAND_NAME", "BTC Forecast")
@@ -249,15 +249,15 @@ I18N = {
         "not_enough_rights": "Недостаточно прав.",
         "start_menu_aff": "Партнёрка",
         "affiliate_menu": "Партнёрская программа:",
-        "affiliate_become": "Стать партнёром / Моя ссылка",
-        "affiliate_stats": "Моя статистика",
+        "affiliate_become": "Стать партнёром",
+        "affiliate_stats": "Статистика",
         "affiliate_code": "Ваш код: {code}\nСсылка: https://t.me/{bot}?start=ref_{code}\nПроцент: {percent}%",
         "affiliate_stats_text": "Рефералов: {count}\nНачислено: {amount}",
         "ref_saved": "Реферальный код сохранён: {code}",
-        "affiliate_list": "Мои рефералы",
+        "affiliate_list": "Рефералы",
         "affiliate_list_title": "Последние рефералы:",
         "affiliate_list_empty": "Пока нет рефералов.",
-        "affiliate_request": "Запросить партнёрку",
+        "affiliate_request": "Партнёрка",
         "affiliate_request_ack": "Заявка отправлена администратору. Мы свяжемся с вами.",
         "sweep_done": "Готово. Истекших подписок: {count}",
         "crypto_link": "Или оплатите криптовалютой:",
@@ -279,7 +279,7 @@ I18N = {
         "quality": "Качество прогнозов (sMAPE/DA) за недавний период:",
         "affiliate_dash": "Партнёрский дашборд за 30 дней:",
         "affiliate_dash_btn": "📈 Дашборд",
-        "affiliate_payout_btn": "💸 Запросить выплату",
+        "affiliate_payout_btn": "💸 Выплата",
         "affiliate_payout_ack": "Заявка на выплату отправлена администратору.",
         "pong": "Понг",
         "your_id": "Ваш ID: {uid}",
@@ -360,15 +360,15 @@ I18N = {
         "not_enough_rights": "Not enough rights.",
         "start_menu_aff": "Affiliate",
         "affiliate_menu": "Affiliate program:",
-        "affiliate_become": "Become partner / My link",
-        "affiliate_stats": "My stats",
+        "affiliate_become": "Become partner",
+        "affiliate_stats": "Stats",
         "affiliate_code": "Your code: {code}\nLink: https://t.me/{bot}?start=ref_{code}\nPercent: {percent}%",
         "affiliate_stats_text": "Referrals: {count}\nAccrued: {amount}",
         "ref_saved": "Referral code saved: {code}",
-        "affiliate_list": "My referrals",
+        "affiliate_list": "Referrals",
         "affiliate_list_title": "Latest referrals:",
         "affiliate_list_empty": "No referrals yet.",
-        "affiliate_request": "Request affiliate",
+        "affiliate_request": "Apply",
         "affiliate_request_ack": "Your request has been sent to admin.",
         "sweep_done": "Done. Expired subscriptions: {count}",
         "crypto_link": "Or pay with crypto:",
@@ -390,7 +390,7 @@ I18N = {
         "quality": "Forecast quality (sMAPE/DA) for recent period:",
         "affiliate_dash": "Affiliate dashboard (last 30 days):",
         "affiliate_dash_btn": "📈 Dashboard",
-        "affiliate_payout_btn": "💸 Request payout",
+        "affiliate_payout_btn": "💸 Payout",
         "affiliate_payout_ack": "Payout request sent to admin.",
         "pong": "Pong",
         "your_id": "Your ID: {uid}",
@@ -1464,12 +1464,18 @@ async def affiliate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     kb = [
-        [InlineKeyboardButton(_t(lang, "affiliate_become"), callback_data="aff:become")],
-        [InlineKeyboardButton(_t(lang, "affiliate_dash_btn"), callback_data="aff:dash")],
-        [InlineKeyboardButton(_t(lang, "affiliate_stats"), callback_data="aff:stats")],
-        [InlineKeyboardButton(_t(lang, "affiliate_list"), callback_data="aff:list")],
-        [InlineKeyboardButton(_t(lang, "affiliate_payout_btn"), callback_data="aff:payout")],
-        [InlineKeyboardButton(_t(lang, "affiliate_request"), callback_data="aff:request")],
+        [
+            InlineKeyboardButton(_t(lang, "affiliate_become"), callback_data="aff:become"),
+            InlineKeyboardButton(_t(lang, "affiliate_stats"), callback_data="aff:stats"),
+        ],
+        [
+            InlineKeyboardButton(_t(lang, "affiliate_list"), callback_data="aff:list"),
+            InlineKeyboardButton(_t(lang, "affiliate_dash_btn"), callback_data="aff:dash"),
+        ],
+        [
+            InlineKeyboardButton(_t(lang, "affiliate_payout_btn"), callback_data="aff:payout"),
+            InlineKeyboardButton(_t(lang, "affiliate_request"), callback_data="aff:request"),
+        ],
     ]
     if EXTERNAL_AFF_LINK_URL:
         kb.append([InlineKeyboardButton(EXTERNAL_AFF_LINK_TEXT, url=EXTERNAL_AFF_LINK_URL)])
