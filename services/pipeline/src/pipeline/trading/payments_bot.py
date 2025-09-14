@@ -17,6 +17,7 @@ from loguru import logger
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    ConversationHandler,
     CommandHandler,
     MessageHandler,
     PreCheckoutQueryHandler,
@@ -248,6 +249,11 @@ PRICE_STARS_MONTH = int(os.getenv("PRICE_STARS_MONTH", "2500"))
 PRICE_STARS_YEAR = int(os.getenv("PRICE_STARS_YEAR", "25000"))
 ENABLE_CRYPTO_PAY = os.getenv("ENABLE_CRYPTO_PAY", "0") in {"1", "true", "True"}
 
+# Conversation states
+HERO_TEXT, HERO_CONFIRM = range(2)
+BONUSES_TEXT, BONUSES_CONFIRM = range(2)
+NEWS_CONTENT, NEWS_CONFIRM = range(2)
+
 # Simple i18n (RU/EN) kept in memory (user_data)
 I18N = {
     "ru": {
@@ -275,6 +281,17 @@ I18N = {
         "admin_edit_hero_a": "🖊 Hero A",
         "admin_edit_hero_b": "🖊 Hero B",
         "not_enough_rights": "Недостаточно прав.",
+        "prompt_hero": "Отправьте текст для Hero {which}",
+        "prompt_bonuses": "Отправьте текст для раздела ‘Бонусы’ (заменит предыдущий)",
+        "prompt_news": "Отправьте новость текстом или файлом — она появится в разделе ‘Новости’",
+        "confirm_prompt": "Подтвердить отправку?",
+        "confirm": "✅ Подтвердить",
+        "cancel": "❌ Отменить",
+        "cancelled": "Операция отменена.",
+        "timeout": "Время ожидания истекло.",
+        "saved_bonuses": "Добавлено в бонусы.",
+        "saved_news": "Новость добавлена.",
+        "saved_hero": "Hero {which} обновлён.",
         "profile": (
             "Профиль: @{}\n"
             "PRO: {}\n"
@@ -386,6 +403,17 @@ I18N = {
         "admin_edit_hero_a": "🖊 Hero A",
         "admin_edit_hero_b": "🖊 Hero B",
         "not_enough_rights": "Not enough rights.",
+        "prompt_hero": "Send text for Hero {which}",
+        "prompt_bonuses": "Send text for the ‘Bonuses’ section (will replace previous)",
+        "prompt_news": "Send news text or file — it will appear in ‘News’",
+        "confirm_prompt": "Confirm submission?",
+        "confirm": "✅ Confirm",
+        "cancel": "❌ Cancel",
+        "cancelled": "Operation cancelled.",
+        "timeout": "Timed out.",
+        "saved_bonuses": "Added to bonuses.",
+        "saved_news": "News item added.",
+        "saved_hero": "Hero {which} updated.",
         "profile": (
             "Profile: @{}\n"
             "PRO: {}\n"
@@ -787,6 +815,181 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def conv_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    if update.callback_query:
+        q = update.callback_query
+        try:
+            await q.answer()
+        except Exception:
+            pass
+        try:
+            await q.edit_message_text(_t(lang, "cancelled"))
+        except Exception:
+            await q.message.reply_text(_t(lang, "cancelled"))
+    else:
+        await update.message.reply_text(_t(lang, "cancelled"))
+    return ConversationHandler.END
+
+
+async def conv_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    try:
+        chat_id = update.effective_chat.id if update and update.effective_chat else None
+        if chat_id:
+            await context.bot.send_message(chat_id, _t(lang, "timeout"))
+    except Exception:
+        pass
+    return ConversationHandler.END
+
+
+async def start_hero(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if not _is_admin(q.from_user.id):
+        await q.answer(_t(lang, "not_enough_rights"), show_alert=True)
+        return ConversationHandler.END
+    which = "a" if q.data.endswith(":a") else "b"
+    context.user_data["hero_target"] = which
+    await q.edit_message_text(_t(lang, "prompt_hero", which=which.upper()))
+    return HERO_TEXT
+
+
+async def hero_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    context.user_data["hero_text"] = update.message.text
+    kb = [[
+        InlineKeyboardButton(_t(lang, "confirm"), callback_data="hero:confirm"),
+        InlineKeyboardButton(_t(lang, "cancel"), callback_data="hero:cancel"),
+    ]]
+    await update.message.reply_text(_t(lang, "confirm_prompt"), reply_markup=InlineKeyboardMarkup(kb))
+    return HERO_CONFIRM
+
+
+async def hero_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if q.data == "hero:confirm":
+        which = context.user_data.get("hero_target")
+        text = context.user_data.get("hero_text")
+        set_content_block(f"hero_{which}", text, q.from_user.id)
+        await q.edit_message_text(_t(lang, "saved_hero", which=which))
+    else:
+        await q.edit_message_text(_t(lang, "cancelled"))
+    context.user_data.pop("hero_target", None)
+    context.user_data.pop("hero_text", None)
+    return ConversationHandler.END
+
+
+async def start_bonuses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if not _is_admin(q.from_user.id):
+        await q.answer(_t(lang, "not_enough_rights"), show_alert=True)
+        return ConversationHandler.END
+    await q.edit_message_text(_t(lang, "prompt_bonuses"))
+    return BONUSES_TEXT
+
+
+async def bonuses_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    context.user_data["bonuses_text"] = update.message.text
+    kb = [[
+        InlineKeyboardButton(_t(lang, "confirm"), callback_data="bonuses:confirm"),
+        InlineKeyboardButton(_t(lang, "cancel"), callback_data="bonuses:cancel"),
+    ]]
+    await update.message.reply_text(_t(lang, "confirm_prompt"), reply_markup=InlineKeyboardMarkup(kb))
+    return BONUSES_CONFIRM
+
+
+async def bonuses_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if q.data == "bonuses:confirm":
+        txt = context.user_data.get("bonuses_text", "")
+        set_content_block("bonus", txt, q.from_user.id)
+        await q.edit_message_text(_t(lang, "saved_bonuses"))
+    else:
+        await q.edit_message_text(_t(lang, "cancelled"))
+    context.user_data.pop("bonuses_text", None)
+    return ConversationHandler.END
+
+
+async def start_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if not _is_admin(q.from_user.id):
+        await q.answer(_t(lang, "not_enough_rights"), show_alert=True)
+        return ConversationHandler.END
+    await q.edit_message_text(_t(lang, "prompt_news"))
+    return NEWS_CONTENT
+
+
+async def news_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = _user_lang(update, context)
+    uid = update.message.from_user.id
+    payload = None
+    if update.message.text:
+        payload = update.message.text
+    else:
+        content_bytes = None
+        kind = None
+        caption = update.message.caption or ""
+        if update.message.document:
+            file = await update.message.document.get_file()
+            content_bytes = await file.download_as_bytearray()
+            kind = "DOC"
+        elif update.message.photo:
+            file = await update.message.photo[-1].get_file()
+            content_bytes = await file.download_as_bytearray()
+            kind = "PHOTO"
+        if content_bytes and kind:
+            from ..infra.s3 import upload_bytes
+            key = f"news/{uid}/{int(os.times().elapsed*1000)}"
+            s3 = upload_bytes(key, bytes(content_bytes), content_type="application/octet-stream")
+            payload = f"{kind}:{s3}|{caption}"
+    if not payload:
+        return ConversationHandler.END
+    context.user_data["news_payload"] = payload
+    kb = [[
+        InlineKeyboardButton(_t(lang, "confirm"), callback_data="news:confirm"),
+        InlineKeyboardButton(_t(lang, "cancel"), callback_data="news:cancel"),
+    ]]
+    await update.message.reply_text(_t(lang, "confirm_prompt"), reply_markup=InlineKeyboardMarkup(kb))
+    return NEWS_CONFIRM
+
+
+async def news_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    lang = _user_lang(update, context)
+    if q.data == "news:confirm":
+        payload = context.user_data.get("news_payload", "")
+        add_news_item(payload, q.from_user.id)
+        await q.edit_message_text(_t(lang, "saved_news"))
+    else:
+        await q.edit_message_text(_t(lang, "cancelled"))
+    context.user_data.pop("news_payload", None)
+    return ConversationHandler.END
+
+
 async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -839,6 +1042,9 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await q.message.reply_text(txt)
         return
+    # hero, bonuses and news callbacks are handled via ConversationHandlers
+    if data in {"admin:hero:a", "admin:hero:b", "admin:bonuses", "admin:news"}:
+
     if data in {"admin:hero:a", "admin:hero:b"}:
         which = "a" if data.endswith(":a") else "b"
         try:
@@ -893,6 +1099,7 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await q.edit_message_text("Ошибка удаления.")
         return
+
     if data == "admin:news":
         try:
             context.user_data["awaiting_news"] = True
@@ -2348,11 +2555,45 @@ def main():
     app.add_handler(CallbackQueryHandler(affiliate_cb, pattern=r"^aff:(become|stats)$"))
     app.add_handler(CallbackQueryHandler(affiliate_cb, pattern=r"^aff:(list|request)$"))
     app.add_handler(CallbackQueryHandler(affiliate_cb, pattern=r"^aff:(dash|payout)$"))
+    hero_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_hero, pattern=r"^admin:hero:(a|b)$")],
+        states={
+            HERO_TEXT: [MessageHandler(filters.TEXT & (~filters.COMMAND), hero_text)],
+            HERO_CONFIRM: [CallbackQueryHandler(hero_confirm, pattern=r"^hero:(confirm|cancel)$")],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, conv_timeout)],
+        },
+        fallbacks=[CommandHandler("cancel", conv_cancel)],
+        conversation_timeout=60,
+    )
+    app.add_handler(hero_conv)
+    bonuses_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_bonuses, pattern=r"^admin:bonuses$")],
+        states={
+            BONUSES_TEXT: [MessageHandler(filters.TEXT & (~filters.COMMAND), bonuses_text)],
+            BONUSES_CONFIRM: [CallbackQueryHandler(bonuses_confirm, pattern=r"^bonuses:(confirm|cancel)$")],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, conv_timeout)],
+        },
+        fallbacks=[CommandHandler("cancel", conv_cancel)],
+        conversation_timeout=60,
+    )
+    app.add_handler(bonuses_conv)
+    news_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_news, pattern=r"^admin:news$")],
+        states={
+            NEWS_CONTENT: [MessageHandler((filters.TEXT | filters.Document.ALL | filters.PHOTO) & (~filters.COMMAND), news_content)],
+            NEWS_CONFIRM: [CallbackQueryHandler(news_confirm, pattern=r"^news:(confirm|cancel)$")],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, conv_timeout)],
+        },
+        fallbacks=[CommandHandler("cancel", conv_cancel)],
+        conversation_timeout=60,
+    )
+    app.add_handler(news_conv)
     app.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^admin:.*$"))
     app.add_handler(
         CallbackQueryHandler(settings_cb, pattern=r"^settings:(lang|admin)$")
     )
     app.add_handler(CallbackQueryHandler(affiliate_cb, pattern=r"^aff:admin$"))
+
     app.add_handler(
         CallbackQueryHandler(admin_cb, pattern=r"^admin:(promo|bonuses|news).*$")
     )
@@ -2364,26 +2605,6 @@ def main():
         lang = _user_lang(update, context)
         user = update.message.from_user
         txt = update.message.text or ""
-        # Admin awaiting flows
-        try:
-            if context.user_data.get("awaiting_bonuses") and _is_admin(user.id):
-                context.user_data["awaiting_bonuses"] = False
-                set_content_block("bonus", txt, user.id)
-                await update.message.reply_text("Добавлено в бонусы.")
-                return
-            if context.user_data.get("awaiting_news") and _is_admin(user.id):
-                context.user_data["awaiting_news"] = False
-                add_news_item(txt, user.id)
-                await update.message.reply_text("Новость добавлена.")
-                return
-            if context.user_data.get("awaiting_hero") and _is_admin(user.id):
-                which = context.user_data.get("awaiting_hero")
-                context.user_data["awaiting_hero"] = None
-                set_content_block(f"hero_{which}", txt, user.id)
-                await update.message.reply_text(f"Hero {which} обновлён.")
-                return
-        except Exception:
-            pass
         # Insight flow for subscribers
         try:
             if not context.user_data.get("awaiting_insight"):
@@ -2411,6 +2632,8 @@ def main():
             await update.message.reply_text("Error" if lang == "en" else "Ошибка")
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    
+
 
     async def handle_admin_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
