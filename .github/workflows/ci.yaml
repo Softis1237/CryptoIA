@@ -37,7 +37,7 @@ jobs:
           pip install -r services/pipeline/requirements.txt
           pip install pytest
       - name: Run unit tests (pipeline)
-        run: pytest -q services/pipeline/tests || true
+        run: pytest -q services/pipeline/tests
 
   smoke:
     runs-on: ubuntu-latest

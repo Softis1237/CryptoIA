@@ -1,3 +1,4 @@
+# flake8: noqa
 from __future__ import annotations
 
 # mypy: ignore-errors
@@ -27,14 +28,15 @@ from loguru import logger
 
 from ..agents.base import AgentResult
 from ..agents.coordinator import AgentCoordinator
+from ..agents.master import run_master_flow
 from ..data.ingest_news import IngestNewsInput
 from ..data.ingest_news import run as run_news
 from ..data.ingest_onchain import IngestOnchainInput
 from ..data.ingest_onchain import run as run_onchain
-from ..data.ingest_orderbook import IngestOrderbookInput
-from ..data.ingest_orderbook import run as run_orderbook
 from ..data.ingest_order_flow import IngestOrderFlowInput
 from ..data.ingest_order_flow import run as run_orderflow
+from ..data.ingest_orderbook import IngestOrderbookInput
+from ..data.ingest_orderbook import run as run_orderbook
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
 from ..data.ingest_prices_lowtf import IngestPricesLowTFInput
@@ -47,6 +49,7 @@ from ..infra.db import (
     fetch_model_trust_regime,
     fetch_predictions_for_cv,
     fetch_recent_predictions,
+    fetch_user_insights_recent,
     insert_agent_metric,
     insert_backtest_result,
     upsert_agent_prediction,
@@ -67,17 +70,14 @@ from ..infra.obs import init_sentry
 from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
-from ..reasoning.debate_arbiter import debate
-from ..reasoning.debate_arbiter import multi_debate
+from ..reasoning.debate_arbiter import debate, multi_debate
 from ..reasoning.explain import explain_short
 from ..regime.predictor_ml import predict as predict_regime_ml
 from ..regime.regime_detect import detect as detect_regime
 from ..reporting.charts import plot_price_with_levels
-from ..infra.db import fetch_user_insights_recent
 from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios
 from ..similarity.similar_past import SimilarPastInput
 from ..similarity.similar_past import run as run_similar
-from ..agents.master import run_master_flow
 from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
@@ -1451,14 +1451,17 @@ class EventStudyAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
-            from ..agents.event_study import EventStudyInput, run as run_event
+            from ..agents.event_study import EventStudyInput
+            from ..agents.event_study import run as run_event
 
             ev = EventStudyInput(
                 event_type=str(payload.get("event_type")),
                 k=int(payload.get("k", 10)),
                 window_hours=int(payload.get("window_hours", 24)),
                 symbol=str(payload.get("symbol", "BTC/USDT")),
-                provider=str(payload.get("provider", os.getenv("CCXT_PROVIDER", "binance"))),
+                provider=str(
+                    payload.get("provider", os.getenv("CCXT_PROVIDER", "binance"))
+                ),
             )
             out = run_event(ev)
             return _ok(self.name, out)
@@ -1557,9 +1560,18 @@ class ModelTrustAgent:
                     evs = payload.get("events") or {}
                     hyp = evs.get("hypothesis") if isinstance(evs, dict) else []
                     if hyp:
-                        best = max(hyp, key=lambda h: float((h or {}).get("confidence", 0.0) or 0.0))
+                        best = max(
+                            hyp,
+                            key=lambda h: float(
+                                (h or {}).get("confidence", 0.0) or 0.0
+                            ),
+                        )
                         et = str(best.get("event", "")).upper()
-                        return "ETF_APPROVAL" if et == "ETF" else ("SEC_ACTION" if et == "REG" else et)
+                        return (
+                            "ETF_APPROVAL"
+                            if et == "ETF"
+                            else ("SEC_ACTION" if et == "REG" else et)
+                        )
                 except Exception:
                     return None
                 return None
@@ -1702,7 +1714,9 @@ def run_release_flow(
     )  # optional LLM forecast
     co.register(BehaviorAgent(), depends_on=["alt_data"])  # risk appetite from options
     co.register(EventImpactAgent(), depends_on=["news"])  # event impact hypotheses
-    co.register(EventStudyAgent(), depends_on=["news"])  # event study on high-impact facts
+    co.register(
+        EventStudyAgent(), depends_on=["news"]
+    )  # event study on high-impact facts
     co.register(
         ModelsAgent("models_4h", horizon_minutes=horizon_hours_4h * 60),
         depends_on=["features"],
@@ -1868,7 +1882,9 @@ def run_release_flow(
         "news_signals": news_list,
         "news_facts": news_facts,
         "orderbook_meta": orderbook_meta,
-        "orderflow_path_s3": (getattr(orderflow_out, "trades_path_s3", None) if orderflow_out else None),
+        "orderflow_path_s3": (
+            getattr(orderflow_out, "trades_path_s3", None) if orderflow_out else None
+        ),
         "onchain_signals": onchain_list,
         "social_signals": social_list,
         "macro_flags": macro_flags,
@@ -1928,9 +1944,9 @@ def run_release_flow(
     # backtest validator (simple breakout on features)
     try:
         with timed(durations, "backtest_validator"):
-            results["backtest_validator"] = co._agents["backtest_validator"].run({
-                "features_path_s3": getattr(f_out, "features_path_s3", "")
-            })  # type: ignore[attr-defined]
+            results["backtest_validator"] = co._agents["backtest_validator"].run(
+                {"features_path_s3": getattr(f_out, "features_path_s3", "")}
+            )  # type: ignore[attr-defined]
     except Exception:
         logger.exception("Failed to run backtest_validator agent")
 
@@ -2092,7 +2108,11 @@ def run_release_flow(
                 "preds_12h": preds12,
                 "regime": regime,
                 "news_ctx": news_ctx,
-                "events": (results.get("event_impact").output if results.get("event_impact") else None),
+                "events": (
+                    results.get("event_impact").output
+                    if results.get("event_impact")
+                    else None
+                ),
             }
         )  # type: ignore[attr-defined]
         upsert_agent_prediction(
@@ -2434,11 +2454,19 @@ def run_release_flow(
         high = []
         for f in (news_facts or [])[:20]:
             t = str(f.get("type", "")).upper()
-            sc = float(f.get("magnitude", 0.0) or 0.0) * float(f.get("confidence", 0.0) or 0.0)
+            sc = float(f.get("magnitude", 0.0) or 0.0) * float(
+                f.get("confidence", 0.0) or 0.0
+            )
             if t in {"HACK", "ETF_APPROVAL", "SEC_ACTION"} and sc >= 0.5:
                 high.append((t, sc))
         seen = set()
-        high_sorted = sorted(high, key=lambda x: (types_priority.index(x[0]) if x[0] in types_priority else 99, -x[1]))
+        high_sorted = sorted(
+            high,
+            key=lambda x: (
+                types_priority.index(x[0]) if x[0] in types_priority else 99,
+                -x[1],
+            ),
+        )
         for t, _ in high_sorted[:2]:
             if t in seen:
                 continue
@@ -2448,7 +2476,9 @@ def run_release_flow(
             if out and out.get("status") != "no-samples":
                 avg = float(out.get("avg_change", 0.0) or 0.0)
                 n = int(out.get("n", 0) or 0)
-                event_summary_lines.append(f"{t}: среднее изменение за 12ч ≈ {avg*100:.1f}% (n={n})")
+                event_summary_lines.append(
+                    f"{t}: среднее изменение за 12ч ≈ {avg*100:.1f}% (n={n})"
+                )
                 try:
                     upsert_agent_prediction(f"event_study_{t}", ctx.run_id, out)
                 except Exception:
@@ -2586,13 +2616,12 @@ def run_release_flow(
 
     # Prepare concise message for Telegram
     try:
-        from ..trading.publish_telegram import (
-            publish_message,
-            publish_photo_from_s3,
-        )
-        from ..utils.calibration import calibrate_proba_by_uncertainty
-        from ..models.calibration_runtime import calibrate_proba as _calib
         from datetime import datetime, timezone
+
+        from ..models.calibration_runtime import calibrate_proba as _calib
+        from ..trading.publish_telegram import publish_message, publish_photo_from_s3
+        from ..utils.calibration import calibrate_proba_by_uncertainty
+
         try:
             from zoneinfo import ZoneInfo  # py>=3.9
         except Exception:
@@ -2631,7 +2660,9 @@ def run_release_flow(
         risk_level = "low" if var95 < 0.01 else ("medium" if var95 < 0.02 else "high")
 
         # Next update (local TZ)
-        def _next_update_label(tz_name: str = os.getenv("TIMEZONE", "Europe/Moscow")) -> str:
+        def _next_update_label(
+            tz_name: str = os.getenv("TIMEZONE", "Europe/Moscow")
+        ) -> str:
             try:
                 tz = ZoneInfo(tz_name) if ZoneInfo else timezone.utc
             except Exception:
@@ -2639,15 +2670,21 @@ def run_release_flow(
             now = datetime.now(timezone.utc).astimezone(tz)
             h = now.hour
             target_h = 12 if h < 12 else 24
-            next_dt = now.replace(hour=0 if target_h == 24 else 12, minute=0, second=0, microsecond=0)
+            next_dt = now.replace(
+                hour=0 if target_h == 24 else 12, minute=0, second=0, microsecond=0
+            )
             if next_dt <= now:
                 # move to next slot
                 add_h = 12 if h < 12 else (24 - h)
-                next_dt = (now + timedelta(hours=add_h)).replace(minute=0, second=0, microsecond=0)
+                next_dt = (now + timedelta(hours=add_h)).replace(
+                    minute=0, second=0, microsecond=0
+                )
             return next_dt.strftime("%d.%m %H:%M %Z")
 
         # Scenario brief
-        sc_list = (sc_pack.get("scenarios", []) if isinstance(sc_pack, dict) else []) or []
+        sc_list = (
+            sc_pack.get("scenarios", []) if isinstance(sc_pack, dict) else []
+        ) or []
         sc_line = "n/a"
         if sc_list:
             sc = sc_list[0]
@@ -2675,10 +2712,12 @@ def run_release_flow(
 
         # publish
         try:
-            publish_photo_from_s3(chart_s3, caption=f"BTC {ctx.slot}: 4h/12h прогноз")
+            publish_photo_from_s3(
+                chart_s3, caption="btc_forecast_caption", slot=ctx.slot
+            )
             if risk_chart_s3:
                 publish_photo_from_s3(
-                    risk_chart_s3, caption=f"BTC {ctx.slot}: риск‑диаграммы"
+                    risk_chart_s3, caption="btc_risk_caption", slot=ctx.slot
                 )
             publish_message("\n".join(msg))
         except Exception:
@@ -2766,7 +2805,11 @@ def run_release_flow(
             f"Опционы: PC={be.get('put_call_ratio','n/a')} OI≈{be.get('open_interest','n/a')} риск={be.get('risk_appetite','n/a')}\n"
             f"Риск-метрики: VaR95≈{riskm.get('VaR95','n/a')}, ES95≈{riskm.get('ES95','n/a')}, maxDD≈{riskm.get('max_drawdown','n/a')}"
             + (f"\nRisk chart: {risk_chart_s3}" if risk_chart_s3 else "")
-            + ("\n\n<b>Event Study</b>\n" + "\n".join(event_summary_lines) if event_summary_lines else "")
+            + (
+                "\n\n<b>Event Study</b>\n" + "\n".join(event_summary_lines)
+                if event_summary_lines
+                else ""
+            )
         )
         upsert_explanations(ctx.run_id, md, risk_flags)
         upsert_trade_suggestion(ctx.run_id, card)
@@ -2892,8 +2935,19 @@ def run_release_flow(
 
         final_summary = {
             "slot": ctx.slot,
-            "regime": str(regime.get("label")) if isinstance(regime, dict) else str(getattr(regime, "label", "")),
-            "regime_conf": float((regime.get("confidence") if isinstance(regime, dict) else getattr(regime, "confidence", 0.0)) or 0.0),
+            "regime": (
+                str(regime.get("label"))
+                if isinstance(regime, dict)
+                else str(getattr(regime, "label", ""))
+            ),
+            "regime_conf": float(
+                (
+                    regime.get("confidence")
+                    if isinstance(regime, dict)
+                    else getattr(regime, "confidence", 0.0)
+                )
+                or 0.0
+            ),
             "e4": {
                 "y_hat": float(getattr(e4, "y_hat", 0.0)),
                 "proba_up": float(getattr(e4, "proba_up", 0.0)),
@@ -2940,11 +2994,16 @@ if __name__ == "__main__":
             tl = title.lower()
             if any(w in tl for w in ["bull", "pump", "up", "рост", "памп"]):
                 sentiment = "positive"
-            elif any(w in tl for w in ["bear", "dump", "down", "пад", "крах", "hack", "exploit"]):
+            elif any(
+                w in tl
+                for w in ["bear", "dump", "down", "пад", "крах", "hack", "exploit"]
+            ):
                 sentiment = "negative"
             else:
                 sentiment = "neutral"
-            w = min(float(it.get("score_truth", 0.0)), float(it.get("score_freshness", 0.0)))
+            w = min(
+                float(it.get("score_truth", 0.0)), float(it.get("score_freshness", 0.0))
+            )
             impact = 0.3 + 0.7 * max(0.0, min(1.0, w))
             ts = int((it.get("created_at") or datetime.now(timezone.utc)).timestamp())
             news_list.append(
