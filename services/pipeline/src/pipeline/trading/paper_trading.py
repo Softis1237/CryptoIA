@@ -1,9 +1,10 @@
+# flake8: noqa
 from __future__ import annotations
 
 import os
 import time
 from datetime import datetime, timezone
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
 
 import ccxt
 from loguru import logger
@@ -106,9 +107,14 @@ def executor_once(run_id: Optional[str] = None):
                     return
                 # Validity check
                 try:
-                    vt = (sug[6] or {}).get("valid_until") if isinstance(sug[6], dict) else None
+                    vt = (
+                        (sug[6] or {}).get("valid_until")
+                        if isinstance(sug[6], dict)
+                        else None
+                    )
                     if vt:
                         import dateutil.parser  # type: ignore
+
                         if _now_utc() > dateutil.parser.isoparse(str(vt)):
                             logger.info(f"Suggestion {run_id} is expired; skipping")
                             return
@@ -273,7 +279,7 @@ def admin_report():
             )
             acc = cur.fetchone()
             if not acc:
-                publish_message_to(admin_chat, "Paper: аккаунт не найден")
+                publish_message_to(admin_chat, "paper_account_not_found")
                 return
             acc_id, equity, start_eq = acc
             cur.execute(
@@ -314,7 +320,7 @@ def admin_weekly_report():
             )
             acc_row = cur.fetchone()
             if not acc_row:
-                publish_message_to(admin_chat, "Paper: аккаунт не найден")
+                publish_message_to(admin_chat, "paper_account_not_found")
                 return
             acc_id, start_eq = acc_row
             cur.execute(
@@ -323,7 +329,7 @@ def admin_weekly_report():
             )
             rows = cur.fetchall() or []
             if not rows:
-                publish_message_to(admin_chat, "Нет данных по equity за неделю")
+                publish_message_to(admin_chat, "paper_no_equity")
                 return
             ts = [r[0] for r in rows]
             eq = [float(r[1]) for r in rows]
@@ -343,7 +349,9 @@ def admin_weekly_report():
     s3_uri = upload_bytes(path, buf.getvalue(), content_type="image/png")
     from .publish_telegram import publish_photo_from_s3
 
-    publish_photo_from_s3(s3_uri, caption=f"Paper: Equity 7d. Start={start_eq}")
+    publish_photo_from_s3(
+        s3_uri, caption="paper_equity_week", days=7, start_eq=start_eq
+    )
 
 
 def main():

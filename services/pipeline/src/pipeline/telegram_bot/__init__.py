@@ -9,3 +9,9 @@ __all__ = [
     "load_user_settings",
     "save_user_setting",
 ]
+
+"""Telegram bot utilities and localization."""
+
+from .messages import get_message
+
+__all__ = ["get_message"]
