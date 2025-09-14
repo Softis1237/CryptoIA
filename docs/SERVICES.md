@@ -13,6 +13,7 @@ Core runtime
   Compile `.po` files to `.mo` with `msgfmt` during deployment; binary `.mo` files are not stored in git.
 
 - trigger_agent: lightweight 24/7 watcher of order flow and news. Emits trigger messages into Redis (queue `RT_TRIGGER_QUEUE`, default `rt:triggers`). Triggers: `VOL_SPIKE`, `DELTA_SPIKE`, `NEWS`.
+  - News polling: by default the agent DOES NOT poll external news sources; it only reads recent high‑impact items from the DB and emits `NEWS` triggers. To enable background polling inside the agent, set `TRIGGER_NEWS_POLL_ENABLE=1`. Recommended: run full news ingestion on a separate schedule to avoid load on the trigger loop.
 - rt_master: on‑demand reactor that waits for trigger events and runs a short‑horizon Master flow (features → models+ensemble → trade card). Publishes concise real‑time alerts to Telegram.
   - Uses regime/event‑aware trust weights; integrates `event_study` for NEWS.
 

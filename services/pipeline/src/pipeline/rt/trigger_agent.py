@@ -38,6 +38,8 @@ L2_USE_WS = os.getenv("ORDERFLOW_USE_WS", "0") in {"1", "true", "True"}  # reuse
 
 # Lightweight news polling
 NEWS_POLL_SEC = float(os.getenv("TRIGGER_NEWS_POLL_SEC", "120"))
+# Explicit flag to enable background polling of news (off by default) — agent will still consume from DB
+NEWS_POLL_ENABLE = os.getenv("TRIGGER_NEWS_POLL_ENABLE", "0") in {"1", "true", "True"}
 NEWS_POLL_WINDOW_H = int(os.getenv("TRIGGER_NEWS_WINDOW_H", "1"))
 
 
@@ -155,7 +157,7 @@ def _maybe_news_triggers() -> None:
 
 
 def _maybe_poll_news_lightweight(last_polled: list[float]) -> None:
-    if not WATCH_NEWS:
+    if not WATCH_NEWS or not NEWS_POLL_ENABLE:
         return
     import time as _t
     now = _t.time()

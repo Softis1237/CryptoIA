@@ -78,11 +78,12 @@ def _get_news_sentiments_llm(
 
         system_prompt = (
             "You are a financial news analyst for the crypto market."
-            " For each headline, provide a JSON object with: sentiment (positive|negative|neutral),"
+            " For each headline, provide a JSON object with fields:"
+            " url (exactly as provided), sentiment (positive|negative|neutral),"
             " impact_score (float 0.0-1.0 indicating market-moving potential), and topics (list of 1-3 relevant keywords)."
-            " Respond ONLY with a JSON list of these objects, one for each headline."
+            " Return ONLY a JSON array of these objects. Do not reorder items."
         )
-        user_prompt = f"Analyze these news headlines:\n{compact_news}"
+        user_prompt = f"Analyze these news headlines (keep the same order, include url back in each object):\n{compact_news}"
 
         # Call the specific Flowise endpoint for sentiment analysis
         results = call_flowise_json(
@@ -100,16 +101,23 @@ def _get_news_sentiments_llm(
             logger.warning("Flowise sentiment call returned unexpected format.")
             return {}
 
-        # The result should be a list of dicts. We map it back to the original news items by URL.
-        # It's assumed the LLM returns one object per input item in the same order.
-        processed_data = {}
-        if len(results) == len(news_items):
-            for i, item in enumerate(news_items):
-                processed_data[item["url"]] = results[i]
-        else:
-            logger.warning(
-                f"Mismatch between input ({len(news_items)}) and output ({len(results)}) from sentiment LLM."
-            )
+        # Prefer mapping by explicit 'url' field when available; fallback to positional mapping
+        processed_data: Dict[str, Dict[str, Any]] = {}
+        try:
+            if all(isinstance(r, dict) and ("url" in r) for r in results):
+                for r in results:
+                    u = str(r.get("url") or "")
+                    if u:
+                        processed_data[u] = r
+            elif len(results) == len(news_items):
+                for i, item in enumerate(news_items):
+                    processed_data[item["url"]] = results[i]
+            else:
+                logger.warning(
+                    f"Mismatch between input ({len(news_items)}) and output ({len(results)}) from sentiment LLM."
+                )
+        except Exception:
+            logger.warning("Unexpected structure from sentiment LLM; falling back to empty mapping.")
 
         return processed_data
 

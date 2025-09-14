@@ -156,12 +156,12 @@ TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM
 MONTH_STARS, YEAR_STARS — стоимость подписки в Telegram Stars (например, 500 и 5000).
 
 CRYPTO_PAYMENT_LINK — ссылка на оплату в криптовалюте.
-CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
+CRYPTO_PAY_SECRET — секрет для проверки HMAC вебхука сервиса оплаты криптой (используется `/confirm` в `crypto_pay_api`).
 
 AFF_UNIT_TO_USD — коэффициент перевода «младших» единиц платежа (например, Stars) в приблизительные USD для аффилиат‑метрик (по умолчанию 0 — отключено).
 
 ENABLE_CRYPTO_PAY — включает кнопку «Оплатить криптой» в боте (по умолчанию 0 — кнопка скрыта, используйте платежи Telegram/Stars). Для реальной интеграции требуется CRYPTO_PAY_API_URL и корректная обработка вебхуков.
-CRYPTO_WEBHOOK_SECRET — секрет для проверки HMAC вебхука крипто‑сервиса.
+CRYPTO_PAY_SECRET — секрет для проверки HMAC вебхука сервиса `crypto_pay_api`.
 
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID — каналы для подписки, админских сообщений и владельца.
@@ -178,6 +178,12 @@ Flowise endpoints (LLM)
 - Для каждого Chatflow возьмите его flowId и укажите полный endpoint вида:
   - FLOWISE_SENTIMENT_URL=http://flowise:3000/api/v1/prediction/<SENTIMENT_FLOW_ID>
   - FLOWISE_FORECAST_URL=http://flowise:3000/api/v1/prediction/<FORECAST_FLOW_ID>
+
+Real‑time triggers
+
+- TRIGGER_WATCH_NEWS — включает обработку новостных триггеров (по умолчанию 1).
+- TRIGGER_NEWS_POLL_SEC — период фонового опроса новостей при включённой опции (по умолчанию 120 секунд).
+- TRIGGER_NEWS_POLL_ENABLE — включает лёгкий внутренний опрос новостей в `trigger_agent` (по умолчанию 0). По умолчанию агент читает готовые новости из БД, а сбор новостей рекомендуется запускать отдельным пайплайном.
   - FLOWISE_EXPLAIN_URL=http://flowise:3000/api/v1/prediction/<EXPLAIN_FLOW_ID>
   - FLOWISE_DEBATE_URL=http://flowise:3000/api/v1/prediction/<DEBATE_FLOW_ID>
   - FLOWISE_SCENARIO_URL=http://flowise:3000/api/v1/prediction/<SCENARIO_FLOW_ID>

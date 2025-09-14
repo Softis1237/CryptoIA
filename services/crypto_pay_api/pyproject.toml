@@ -11,6 +11,8 @@ dependencies = [
     "uvicorn[standard]==0.30.1",
     "loguru==0.7.2",
     "psycopg2-binary==2.9.9",
+    # Declared to surface the cross-package dependency; install pipeline first (e.g. `pip install -e services/pipeline`).
+    "pipeline>=0.1.0",
 ]
 
 [tool.setuptools.packages.find]
