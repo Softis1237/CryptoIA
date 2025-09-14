@@ -17,10 +17,15 @@ orchestration/	Сценарии запуска (predict_release, agent_flow), п
 agents/        Базовые классы и координатор агентов.
 mcp/           Мини‑сервер и клиент MCP для безопасного вызова инструментов.
 utils/         Общие утилиты (калибровка, текст).
+telegram_bot/  Интерактивный Telegram‑бот: /start, /help, настройки.
 infra/	База данных (Postgres + pgvector), кеш Redis, s3/minio, логи и метрики.
 migrations/	SQL‑миграции для PostgreSQL (таблицы для цен, сигналов, прогнозов, торговых позиций и др.).
 ops/	Инфраструктура и наблюдаемость (Prometheus, Grafana, алерты, Windmill flows). Airflow DAGи перенесены в ops/archive/airflow как опциональные.
-Дополнительная документация находится в docs/ — читайте ARCHITECTURE.md для схемы потоков, DATA_SOURCES.md для источников данных, DB_SCHEMA.md для описания таблиц, ENV.md для переменных окружения, OPERATIONS.md для запуска и наблюдаемости, TRADING.md для режимов торговли и PAYMENTS.md для оплаты подписки. В этом README собраны краткие инструкции по запуску и отладке.
+Дополнительная документация находится в docs/ — читайте ARCHITECTURE.md для схемы потоков, DATA_SOURCES.md для источников данных, DB_SCHEMA.md для описания таблиц, ENV.md для переменных окружения, OPERATIONS.md для запуска и наблюдаемости, TRADING.md для режимов торговли, TELEGRAM_BOT.md для меню и админки бота и PAYMENTS.md для оплаты подписки. В этом README собраны краткие инструкции по запуску и отладке.
+
+Дополнительная документация находится в docs/ — читайте ARCHITECTURE.md для схемы потоков, DATA_SOURCES.md для источников данных, DB_SCHEMA.md для описания таблиц, ENV.md для переменных окружения, OPERATIONS.md для запуска и наблюдаемости, TRADING.md для режимов торговли, TELEGRAM_BOT.md для бота и PAYMENTS.md для оплаты подписки. В этом README собраны краткие инструкции по запуску и отладке.
+
+Дополнительная документация находится в docs/ — читайте ARCHITECTURE.md для схемы потоков, DATA_SOURCES.md для источников данных, DB_SCHEMA.md для описания таблиц, ENV.md для переменных окружения, OPERATIONS.md для запуска и наблюдаемости, [BITCOIN_THEORY.md](docs/BITCOIN_THEORY.md) для фундаментальных свойств биткойна, [TRADING_PRIMER.md](docs/TRADING_PRIMER.md) для основ трейдинга, TRADING.md для режимов торговли и PAYMENTS.md для оплаты подписки. В этом README собраны краткие инструкции по запуску и отладке.
 Поток релиза
 В стандартном сценарии pipeline запускается дважды в день (12:00 и 00:00 по Asia/Jerusalem), но можно запускать вручную. Основные шаги:
     1. Ingest: загрузка цен, новостей и (по флагам) стакана, ончейна, фьючерсов, соц‑сетей, альт‑данных. Данные сохраняются в S3 и публикуют метрики.
@@ -45,7 +50,9 @@ docker compose up -d --build
 docker compose run --rm pipeline python -m pipeline.orchestration.predict_release --slot=manual
 Или воспользуйтесь DAG: USE_COORDINATOR=1 и python -m pipeline.orchestration.agent_flow --slot=manual.
     1. Проверка здоровья: сервис поднимает HTTP эндпоинт http://localhost:8000/health. Он возвращает `OK`, если Postgres и S3 доступны; в противном случае ответит `FAIL`. Дополнительно смотрите логи контейнеров (`docker compose logs -f pipeline scheduler`) и метрики (http://localhost:9091/metrics).
-    2. Режимы торговли:
+
+    2. Анализ: `make analyze ARGS="price <path>"` — выводит последние метрики (price, orderflow, supply-demand, patterns).
+    3. Режимы торговли:
     3. Бумажная торговля: включайте DRY_RUN=1 (по умолчанию) и используйте python -m pipeline.trading.paper_trading executor_once для открытия позиций. Все сделки записываются в paper_positions и связанные таблицы.
     4. Живая торговля: установите EXCHANGE_API_KEY, EXCHANGE_SECRET, EXCHANGE_TYPE и DRY_RUN=0. Скрипт python -m pipeline.trading.executor_live откроет сделку из последнего предложения. Скрипт python -m pipeline.trading.risk_loop_live следит за trailing‑stop и перемещает стоп при улучшении цены (см. docs/TRADING.md).
     5. Обучение ML моделей: для использования LGBM/XGBoost/CatBoost моделей активируйте стэкинг (ENABLE_STACKING=1) и выполняйте python -m pipeline.ops.retrain. Существует Flow ops/windmill/flows/train_ml_register.py для автоматизации.
@@ -59,6 +66,22 @@ docker compose run --rm pipeline python -m pipeline.orchestration.predict_releas
     • Alt‑данные: модуль ingest_altdata собирает тренды Google, открытый интерес CME, опционы, данные ликвидности и RSS события. Включается флагом ENABLE_ALT_DATA=1 и требует ключей Quandl/Coinglass.
     • Регулярные retrain/feedback: скрипт pipeline.ops.feedback_metrics собирает факт результов предсказаний, рассчитывает ошибки, тэги коренных причин и пушит агрегаты в Prometheus. Его можно запускать раз в день (см. ops/windmill/flows/feedback_metrics_daily.py).
     • Многоуровневая валидация: существуют валидаторы (trade_validator, regime_validator, llm_validator), которые могут отклонять сделки или прогнозы. Они вызываются координатором, если активирован ENABLE_LLM_VALIDATOR и настроен FLOWISE_VALIDATE_URL.
+
+Тестирование
+------------
+Для запуска локальных юнит‑тестов выполните:
+
+```bash
+pytest -q services/pipeline/tests
+```
+
+
+Тесты
+Для проверки ключевых функций выполните:
+
+```
+pytest services/pipeline/tests
+```
 Предосторожности и ограничения
 Этот проект — исследовательский прототип. Он не является торговым советом и не гарантирует прибыль. Перед запуском живой торговли:
     • Тщательно протестируйте систему в режиме бумаги (DRY_RUN=1) и убедитесь, что модели устойчивы.
