@@ -7,6 +7,11 @@ Core runtime
 - pipeline: Python code for data ingestion, features, models, ensembles, risk and publishing. Usually invoked by the coordinator on schedule, but you can run tasks ad‑hoc via docker compose run.
 - coordinator: Scheduler loop that triggers the twice‑daily forecast pipeline (00:00 and 12:00 in TIMEZONE). Also pushes metrics and optionally retrains models.
 - bot: Telegram bot for subscriptions (Stars), direct messages, promo codes, and user insights collection. It can publish forecasts either to a channel or as DMs.
+- signal_bot: Interactive Telegram bot for signals, news and user settings. Run `python -m pipeline.telegram_bot.bot` inside the pipeline container; stores per-user prefs in Redis and reuses publish_telegram functions.
+
+  Supports RU/EN localization via gettext with message templates in `pipeline/telegram_bot/messages.py`.
+  Compile `.po` files to `.mo` with `msgfmt` during deployment; binary `.mo` files are not stored in git.
+
 - trigger_agent: lightweight 24/7 watcher of order flow and news. Emits trigger messages into Redis (queue `RT_TRIGGER_QUEUE`, default `rt:triggers`). Triggers: `VOL_SPIKE`, `DELTA_SPIKE`, `NEWS`.
 - rt_master: on‑demand reactor that waits for trigger events and runs a short‑horizon Master flow (features → models+ensemble → trade card). Publishes concise real‑time alerts to Telegram.
   - Uses regime/event‑aware trust weights; integrates `event_study` for NEWS.

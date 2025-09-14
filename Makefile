@@ -17,3 +17,6 @@ precommit:
 pipeline-shell:
 	docker compose run --rm pipeline bash
 
+
+analyze:
+	python -m pipeline.cli.analysis $(ARGS)

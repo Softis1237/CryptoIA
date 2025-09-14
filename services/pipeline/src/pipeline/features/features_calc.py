@@ -13,6 +13,7 @@ from ..infra.s3 import download_bytes, upload_bytes
 from .features_cpd import enrich_with_cpd_simple
 from .features_kats import enrich_with_kats
 from .features_patterns import detect_patterns, load_patterns_from_db
+from .features_supply_demand import latest_supply_demand_metrics
 
 
 class FeaturesCalcInput(BaseModel):
@@ -24,6 +25,7 @@ class FeaturesCalcInput(BaseModel):
     orderflow_path_s3: Optional[str] = None
     onchain_signals: List[dict] = Field(default_factory=list)
     social_signals: List[dict] = Field(default_factory=list)
+    supply_demand_meta: Optional[Dict[str, Any]] = None
     regime_hint: Optional[str] = None  # if known from previous run
     macro_flags: List[str] = Field(default_factory=list)  # e.g., ["CPI", "FOMC"]
     social_window_minutes: int = 180
@@ -395,6 +397,14 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     df["onchain_miners_balance"] = oc_map.get("miners_balance_sum", 0.0)
     df["onchain_transfers_vol"] = oc_map.get("transfers_volume_sum", 0.0)
 
+    # Supply/demand metrics (orderbook, derivatives, on-chain holders)
+    sd = latest_supply_demand_metrics(payload.supply_demand_meta or {})
+    df["sd_orderbook_imbalance"] = sd.get("orderbook_imbalance", 0.0)
+    df["sd_open_interest"] = sd.get("open_interest", 0.0)
+    df["sd_funding_rate"] = sd.get("funding_rate", 0.0)
+    df["sd_long_term_ratio"] = sd.get("long_term_holder_ratio", 0.0)
+    df["sd_short_term_ratio"] = sd.get("short_term_holder_ratio", 0.0)
+
     # Technical pattern features (rule-based detection over OHLC series)
     try:
         patterns = load_patterns_from_db()
@@ -633,6 +643,11 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         "onchain_sopr",
         "onchain_miners_balance",
         "onchain_transfers_vol",
+        "sd_orderbook_imbalance",
+        "sd_open_interest",
+        "sd_funding_rate",
+        "sd_long_term_ratio",
+        "sd_short_term_ratio",
         # Technical pattern flags (if present)
         *([c for c in [
             "pat_hammer",

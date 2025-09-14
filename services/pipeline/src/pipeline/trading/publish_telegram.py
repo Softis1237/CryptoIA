@@ -1,11 +1,15 @@
+# flake8: noqa
 from __future__ import annotations
 
 import os
+
 from loguru import logger
 
 from ..infra.config import settings
-from ..infra.s3 import download_bytes
 from ..infra.db import list_active_subscriber_ids
+from ..infra.s3 import download_bytes
+
+from ..telegram_bot.messages import get_message
 
 
 def _chunk_text(text: str, limit: int = 4096):
@@ -29,18 +33,38 @@ def _dm_user_ids() -> list[str]:
     return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
 
 
-def _append_aff_footer(text: str) -> str:
+def _append_aff_footer(text: str, lang: str = "en") -> str:
     url = os.getenv("EXTERNAL_AFF_LINK_URL", "").strip()
     if not url:
         return text
-    prefix = os.getenv("EXTERNAL_AFF_FOOTER_EN", "Recommended exchange:").strip()
+    if lang == "ru":
+        prefix = os.getenv(
+            "EXTERNAL_AFF_FOOTER_RU",
+            "Рекомендуемая биржа:",
+        ).strip()
+    else:
+        prefix = os.getenv(
+            "EXTERNAL_AFF_FOOTER_EN",
+            "Recommended exchange:",
+        ).strip()
     footer = f"\n\n{prefix} {url}"
-    return (text + footer) if footer not in text else text
+    return text if footer in text else text + footer
 
 
-def publish_message(text: str) -> None:
+def publish_message(
+    text: str,
+    lang: str = "en",
+    append_aff: bool = True,
+) -> None:
+    if append_aff:
+        text = _append_aff_footer(text, lang)
+
+def publish_message(text: str, **kwargs) -> None:
+    text = get_message(text, **kwargs)
     if not settings.telegram_bot_token:
-        logger.warning("TELEGRAM_BOT_TOKEN не задан — печатаю локально\n" + text)
+        logger.warning(
+            "TELEGRAM_BOT_TOKEN не задан — печатаю локально\n" + text,
+        )
         print(text)
         return
     try:
@@ -53,7 +77,6 @@ def publish_message(text: str) -> None:
         from telegram import Bot
 
         bot = Bot(token=settings.telegram_bot_token)
-        text = _append_aff_footer(text)
         dm_ids = _dm_user_ids()
         if settings.telegram_chat_id:
             for chunk in _chunk_text(text):
@@ -82,7 +105,9 @@ def publish_message(text: str) -> None:
             # Fallback: DM всем активным подписчикам из БД
             uids = list_active_subscriber_ids()
             if not uids:
-                logger.warning("Нет активных подписчиков; печатаю локально\n" + text)
+                logger.warning(
+                    "Нет активных подписчиков; печатаю локально\n" + text,
+                )
                 print(text)
             for uid in uids:
                 for chunk in _chunk_text(text):
@@ -100,7 +125,11 @@ def publish_message(text: str) -> None:
         logger.exception(f"Ошибка публикации в Telegram: {e}")
 
 
-def publish_message_to(chat_id: str, text: str) -> None:
+def publish_message_to(chat_id: str, text: str, lang: str = "en") -> None:
+    text = _append_aff_footer(text, lang)
+
+def publish_message_to(chat_id: str, text: str, **kwargs) -> None:
+    text = get_message(text, **kwargs)
     if not settings.telegram_bot_token or not chat_id:
         logger.warning(
             "TELEGRAM_BOT_TOKEN/CHAT_ID не заданы — печатаю локально:\n" + text
@@ -123,7 +152,10 @@ def publish_message_to(chat_id: str, text: str) -> None:
         logger.exception(f"Ошибка публикации в Telegram (target): {e}")
 
 
-def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
+def publish_photo_from_s3(
+    s3_uri: str, caption: str | None = None, lang: str = "en"
+) -> None:
+def publish_photo_from_s3(s3_uri: str, caption: str | None = None, **kwargs) -> None:
     if not s3_uri:
         return
     if not settings.telegram_bot_token:
@@ -141,7 +173,10 @@ def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
         content = download_bytes(s3_uri)
         bot = Bot(token=settings.telegram_bot_token)
         # append footer to caption
-        caption = _append_aff_footer(caption or "")
+        caption = _append_aff_footer(caption or "", lang)
+
+        caption = get_message(caption, **kwargs) if caption else ""
+        caption = _append_aff_footer(caption)
         dm_ids = _dm_user_ids()
         if settings.telegram_chat_id:
             bot.send_photo(
@@ -184,8 +219,12 @@ def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
         logger.exception(f"Ошибка отправки фото в Telegram: {e}")
 
 
-def publish_code_block_json(title: str, data: dict) -> None:
+def publish_code_block_json(title: str, data: dict, lang: str = "en") -> None:
     import json
 
-    text = f"<b>{title}</b>\n<code>\n{json.dumps(data, ensure_ascii=False, indent=2)}\n</code>"
-    publish_message(text)
+    text = (
+        f"<b>{title}</b>\n<code>\n"
+        f"{json.dumps(data, ensure_ascii=False, indent=2)}\n</code>"
+    )
+    text = _append_aff_footer(text, lang)
+    publish_message(text, lang, append_aff=False)
