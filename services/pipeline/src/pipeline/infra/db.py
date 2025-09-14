@@ -101,7 +101,18 @@ def get_or_create_affiliate(partner_user_id: int, partner_name: str | None = Non
                     "INSERT INTO affiliates (partner_user_id, partner_name, code, percent) VALUES (%s, %s, %s, %s)",
                     (partner_user_id, partner_name, code, percent),
                 )
-            return code, percent
+    return code, percent
+
+
+def get_affiliate_for_user(partner_user_id: int) -> tuple[str | None, int | None]:
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, percent FROM affiliates WHERE partner_user_id=%s", (partner_user_id,))
+            row = cur.fetchone()
+            if not row:
+                return None, None
+            return (str(row[0]) if row[0] is not None else None), (int(row[1]) if row[1] is not None else None)
 
 
 def set_affiliate_percent(partner_user_id: int, percent: int) -> None:
@@ -168,6 +179,33 @@ def apply_affiliate_commission_for_first_purchase(user_id: int, charge_id: str, 
     if not aff:
         return
     partner_user_id, percent, partner_name = aff
+    # Dynamic tiers: env AFF_TIERS="0:50,10:55,50:60,200:70" (referral_count:percent)
+    try:
+        import os as _os
+        tiers_raw = _os.getenv("AFF_TIERS", "")
+        tier_pct = None
+        if tiers_raw:
+            tiers = []
+            for part in tiers_raw.split(","):
+                if ":" in part:
+                    t, p = part.split(":", 1)
+                    try:
+                        tiers.append((int(t.strip()), int(p.strip())))
+                    except Exception:
+                        continue
+            tiers.sort(key=lambda x: x[0])
+            # count existing referrals
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(1) FROM referrals WHERE partner_user_id=%s", (partner_user_id,))
+                    cnt = int((cur.fetchone() or [0])[0] or 0)
+            for thr, pct in tiers:
+                if cnt >= thr:
+                    tier_pct = pct
+        if tier_pct is not None:
+            percent = max(int(percent), int(tier_pct))
+    except Exception:
+        pass
     commission = int(round(amount * percent / 100.0))
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -282,6 +320,15 @@ def mark_affiliate_request(id_str: str, status: str) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (status, id_str))
+
+
+def has_pending_affiliate_request(user_id: int) -> bool:
+    ensure_affiliate_requests_table()
+    sql = "SELECT 1 FROM affiliate_requests WHERE user_id=%s AND status='pending' LIMIT 1"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id,))
+            return cur.fetchone() is not None
 
 
 
@@ -954,6 +1001,7 @@ def create_redeem_code(months: int, invoice_id: str) -> str:
     """Generate and store a one-time redeem code for a given invoice."""
     import secrets
 
+    ensure_redeem_codes_table()
     code = secrets.token_urlsafe(8)
     sql = "INSERT INTO redeem_codes (code, months, invoice_id) VALUES (%s, %s, %s)"
     with get_conn() as conn:
@@ -964,6 +1012,7 @@ def create_redeem_code(months: int, invoice_id: str) -> str:
 
 def redeem_code_use(code: str) -> int | None:
     """Mark redeem code as used and return months granted."""
+    ensure_redeem_codes_table()
     sql = (
         "UPDATE redeem_codes SET used_at=now() WHERE code=%s AND used_at IS NULL RETURNING months"
     )
@@ -991,6 +1040,30 @@ def get_subscription_status(user_id: int) -> tuple[str, Optional[str]]:
             if ends_at and ends_at > datetime.now(timezone.utc):
                 return str(status), ends_at.isoformat()
             return "expired", ends_at.isoformat() if ends_at else None
+
+
+def list_active_subscriber_ids(limit: int | None = None) -> list[int]:
+    """Return Telegram user_ids with active subscriptions (ends_at > now).
+
+    Distinct user_ids, newest entries win implicitly.
+    """
+    ensure_subscriptions_tables()
+    sql = (
+        "SELECT DISTINCT user_id FROM subscriptions "
+        "WHERE status='active' AND ends_at > now() "
+        "ORDER BY ends_at DESC"
+    )
+    out: list[int] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall() or []
+            for (uid,) in rows[: (int(limit) if limit else None)]:
+                try:
+                    out.append(int(uid))
+                except Exception:
+                    continue
+    return out
 
 
 def sweep_expired_subscriptions(now=None) -> int:
@@ -1346,4 +1419,213 @@ def fetch_recent_agent_lessons(n: int = 5) -> list[dict]:
                         "meta": meta or {},
                     }
                 )
+    return out
+
+def ensure_redeem_codes_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS redeem_codes (\n"
+        "  code TEXT PRIMARY KEY,\n"
+        "  months INT NOT NULL,\n"
+        "  discount_pct INT,\n"
+        "  invoice_id TEXT,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n"
+        "  used_at TIMESTAMPTZ\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            try:
+                cur.execute("ALTER TABLE redeem_codes ADD COLUMN IF NOT EXISTS discount_pct INT")
+            except Exception:
+                pass
+
+def create_discount_code(discount_pct: int, invoice_id: str) -> str:
+    """Generate one-time discount code for next purchase."""
+    ensure_redeem_codes_table()
+    import secrets
+    code = "DISC-" + secrets.token_urlsafe(8)
+    sql = "INSERT INTO redeem_codes (code, months, discount_pct, invoice_id) VALUES (%s, %s, %s, %s)"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code, 0, int(discount_pct), invoice_id))
+    return code
+
+def fetch_redeem_code(code: str) -> tuple[int | None, int | None, bool]:
+    """Return (months, discount_pct, used)."""
+    ensure_redeem_codes_table()
+    sql = "SELECT months, discount_pct, used_at IS NOT NULL FROM redeem_codes WHERE code=%s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code,))
+            row = cur.fetchone()
+            if not row:
+                return None, None, False
+            m, d, used = row
+            return (int(m) if m is not None else None), (int(d) if d is not None else None), bool(used)
+
+def mark_redeem_code_used(code: str) -> None:
+    ensure_redeem_codes_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE redeem_codes SET used_at=now() WHERE code=%s AND used_at IS NULL", (code,))
+
+def ensure_user_discounts_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS user_discounts (\n"
+        "  user_id BIGINT PRIMARY KEY,\n"
+        "  discount_pct INT NOT NULL,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n"
+        "  used_at TIMESTAMPTZ\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+def set_user_discount(user_id: int, discount_pct: int) -> None:
+    ensure_user_discounts_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_discounts (user_id, discount_pct) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET discount_pct=excluded.discount_pct, created_at=now(), used_at=NULL",
+                (user_id, int(discount_pct)),
+            )
+
+def get_user_discount(user_id: int) -> int | None:
+    ensure_user_discounts_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT discount_pct FROM user_discounts WHERE user_id=%s AND used_at IS NULL", (user_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+def pop_user_discount(user_id: int) -> int | None:
+    ensure_user_discounts_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE user_discounts SET used_at=now() WHERE user_id=%s AND used_at IS NULL RETURNING discount_pct",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+def ensure_content_table() -> None:
+    sql = (
+        "CREATE TABLE IF NOT EXISTS content_blocks (\n"
+        "  id UUID DEFAULT uuid_generate_v4(),\n"
+        "  key TEXT NOT NULL,\n"
+        "  content TEXT NOT NULL,\n"
+        "  author_id BIGINT,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            # Backward compat: add id if missing
+            try:
+                cur.execute("ALTER TABLE content_blocks ADD COLUMN IF NOT EXISTS id UUID DEFAULT uuid_generate_v4()")
+            except Exception:
+                pass
+
+
+def set_content_block(key: str, content: str, author_id: int | None = None) -> None:
+    """Replace content for a given key by inserting a new row; latest row is used."""
+    ensure_content_table()
+    sql = (
+        "INSERT INTO content_blocks (key, content, author_id) VALUES (%s, %s, %s)"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (key, content, author_id))
+
+def list_content_items(key: str, limit: int = 10) -> list[tuple[str, str | None]]:
+    ensure_content_table()
+    sql = "SELECT content, created_at FROM content_blocks WHERE key=%s ORDER BY created_at DESC LIMIT %s"
+    out: list[tuple[str, str | None]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (key, int(limit)))
+            rows = cur.fetchall() or []
+            for content, created_at in rows:
+                out.append((str(content or ""), (created_at.isoformat() if created_at else None)))
+    return out
+
+
+def list_content_items_with_id(key: str, limit: int = 20) -> list[tuple[str, str, str | None]]:
+    ensure_content_table()
+    sql = "SELECT id::text, content, created_at FROM content_blocks WHERE key=%s ORDER BY created_at DESC LIMIT %s"
+    out: list[tuple[str, str, str | None]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (key, int(limit)))
+            rows = cur.fetchall() or []
+            for idv, content, created_at in rows:
+                out.append((str(idv), str(content or ""), (created_at.isoformat() if created_at else None)))
+    return out
+
+
+def delete_content_item(item_id: str) -> None:
+    ensure_content_table()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM content_blocks WHERE id::text=%s", (item_id,))
+
+
+def get_latest_content(key: str) -> tuple[str | None, str | None]:
+    """Return (content, created_at_iso) for the latest entry by key or (None,None)."""
+    ensure_content_table()
+    sql = (
+        "SELECT content, created_at FROM content_blocks WHERE key=%s ORDER BY created_at DESC LIMIT 1"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (key,))
+            row = cur.fetchone()
+            if not row:
+                return None, None
+            return str(row[0] or ""), (row[1].isoformat() if row[1] else None)
+
+
+def add_news_item(text: str, author_id: int | None = None) -> None:
+    set_content_block("news", text, author_id)
+
+
+def list_news_items(limit: int = 5) -> list[tuple[str, str | None]]:
+    """Return recent news items: list of (content, created_at_iso)."""
+    ensure_content_table()
+    sql = (
+        "SELECT content, created_at FROM content_blocks WHERE key='news' ORDER BY created_at DESC LIMIT %s"
+    )
+    out: list[tuple[str, str | None]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(limit),))
+            rows = cur.fetchall() or []
+            for content, created_at in rows:
+                out.append((str(content or ""), (created_at.isoformat() if created_at else None)))
+    return out
+
+
+def get_affiliate_balance(partner_user_id: int) -> int:
+    ensure_affiliates_tables()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT balance FROM affiliates WHERE partner_user_id=%s", (partner_user_id,))
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
+def list_user_payments(user_id: int, limit: int = 5) -> list[tuple[str, int, str]]:
+    ensure_payments_table()
+    sql = "SELECT created_at, amount, status FROM payments WHERE user_id=%s ORDER BY created_at DESC LIMIT %s"
+    out: list[tuple[str, int, str]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id, int(limit)))
+            rows = cur.fetchall() or []
+            for created_at, amount, status in rows:
+                out.append((created_at.isoformat() if created_at else "", int(amount or 0), str(status or "")))
     return out

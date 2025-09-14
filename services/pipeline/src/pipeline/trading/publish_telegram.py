@@ -5,6 +5,7 @@ from loguru import logger
 
 from ..infra.config import settings
 from ..infra.s3 import download_bytes
+from ..infra.db import list_active_subscriber_ids
 
 
 def _chunk_text(text: str, limit: int = 4096):
@@ -28,6 +29,15 @@ def _dm_user_ids() -> list[str]:
     return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
 
 
+def _append_aff_footer(text: str) -> str:
+    url = os.getenv("EXTERNAL_AFF_LINK_URL", "").strip()
+    if not url:
+        return text
+    prefix = os.getenv("EXTERNAL_AFF_FOOTER_EN", "Recommended exchange:").strip()
+    footer = f"\n\n{prefix} {url}"
+    return (text + footer) if footer not in text else text
+
+
 def publish_message(text: str) -> None:
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN не задан — печатаю локально\n" + text)
@@ -43,6 +53,7 @@ def publish_message(text: str) -> None:
         from telegram import Bot
 
         bot = Bot(token=settings.telegram_bot_token)
+        text = _append_aff_footer(text)
         dm_ids = _dm_user_ids()
         if settings.telegram_chat_id:
             for chunk in _chunk_text(text):
@@ -68,8 +79,23 @@ def publish_message(text: str) -> None:
                         logger.warning(f"DM send failed to {uid}: {e}")
             logger.info(f"Отправлено в личку пользователям: {len(dm_ids)}")
         else:
-            logger.warning("TELEGRAM_CHAT_ID и TELEGRAM_DM_USER_IDS не заданы — печатаю локально\n" + text)
-            print(text)
+            # Fallback: DM всем активным подписчикам из БД
+            uids = list_active_subscriber_ids()
+            if not uids:
+                logger.warning("Нет активных подписчиков; печатаю локально\n" + text)
+                print(text)
+            for uid in uids:
+                for chunk in _chunk_text(text):
+                    try:
+                        bot.send_message(
+                            chat_id=uid,
+                            text=chunk,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"DM send failed to {uid}: {e}")
+            logger.info(f"Отправлено активным подписчикам: {len(uids)}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Ошибка публикации в Telegram: {e}")
 
@@ -114,6 +140,8 @@ def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
 
         content = download_bytes(s3_uri)
         bot = Bot(token=settings.telegram_bot_token)
+        # append footer to caption
+        caption = _append_aff_footer(caption or "")
         dm_ids = _dm_user_ids()
         if settings.telegram_chat_id:
             bot.send_photo(
@@ -136,7 +164,22 @@ def publish_photo_from_s3(s3_uri: str, caption: str | None = None) -> None:
                     logger.warning(f"DM photo failed to {uid}: {e}")
             logger.info(f"Фото отправлено в личку: {len(dm_ids)}")
         else:
-            logger.warning("TELEGRAM_CHAT_ID и TELEGRAM_DM_USER_IDS не заданы — пропускаю фото")
+            # Fallback: DM всем активным подписчикам
+            uids = list_active_subscriber_ids()
+            if not uids:
+                logger.warning("Нет активных подписчиков — пропускаю фото")
+                return
+            for uid in uids:
+                try:
+                    bot.send_photo(
+                        chat_id=uid,
+                        photo=content,
+                        caption=caption or "",
+                        parse_mode="HTML",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"DM photo failed to {uid}: {e}")
+            logger.info(f"Фото отправлено активным подписчикам: {len(uids)}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Ошибка отправки фото в Telegram: {e}")
 

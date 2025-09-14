@@ -14,6 +14,47 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 from ..infra.s3 import download_bytes, upload_bytes
+ёimport os
+import numpy as np
+
+
+def _overlay_brand(fig, ax, title: str | None = None) -> None:
+    """Overlay simple watermark and optional logo from S3.
+
+    Env:
+      - LOGO_S3: S3 URI to logo (PNG with transparent bg recommended)
+      - BRAND_WATERMARK: text watermark (defaults to BRAND_NAME or 'CryptoIA')
+    """
+    try:
+        wm = os.getenv("BRAND_WATERMARK") or os.getenv("BRAND_NAME") or "CryptoIA"
+        ax.text(
+            0.99,
+            0.02,
+            wm,
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=9,
+            color="#888888",
+            alpha=0.8,
+        )
+        logo_s3 = os.getenv("LOGO_S3")
+        if logo_s3:
+            try:
+                raw = download_bytes(logo_s3)
+                import PIL.Image as Image  # lazy
+
+                img = Image.open(io.BytesIO(raw))
+                # Add small axes for the logo at top-left
+                ax_logo = fig.add_axes([0.01, 0.82, 0.12, 0.12], anchor="NW")
+                ax_logo.imshow(img)
+                ax_logo.axis("off")
+            except Exception:
+                pass
+        if title:
+            ax.set_title(title)
+    except Exception:
+        pass
 
 
 def plot_price_with_levels(
@@ -42,7 +83,8 @@ def plot_price_with_levels(
     if y_hat_12h is not None:
         ax.axhline(y_hat_12h, color="#ff7f0e", linestyle=":", linewidth=1.2, label="12h forecast")
 
-    ax.set_title(title)
+    # Title & watermark/branding
+    _overlay_brand(fig, ax, title)
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Price")
     ax.grid(True, alpha=0.2)
@@ -81,7 +123,6 @@ def plot_risk_breakdown(
         # fallback to price chart
         return plot_price_with_levels(features_path_s3, title=title, slot=slot)
 
-    import numpy as np
     # Drawdown
     wealth = (1 + ret).cumprod()
     peak = wealth.cummax()
@@ -103,7 +144,8 @@ def plot_risk_breakdown(
     ax2.plot(df["dt"].iloc[-len(dd):], dd.values, color="#2ca02c", linewidth=1.2)
     ax2.set_title("Drawdown")
     ax2.grid(True, alpha=0.2)
-    fig.suptitle(title)
+    # branding on first axes
+    _overlay_brand(fig, ax1, title)
     fig.tight_layout()
 
     buf = io.BytesIO()
