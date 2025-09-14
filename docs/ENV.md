@@ -147,6 +147,9 @@ PRICE_STARS_MONTH, PRICE_STARS_YEAR — стоимость подписки в�
 
 CRYPTO_PAYMENT_URL — ссылка на оплату в криптовалюте.
 
+EXTERNAL_AFF_LINK_URL — ссылка на внешнюю партнёрскую биржу, добавляется в конец сообщений и подписей.
+EXTERNAL_AFF_FOOTER_EN, EXTERNAL_AFF_FOOTER_RU — текст префикса для ссылки (по умолчанию «Recommended exchange:» и «Рекомендуемая биржа:»).
+
 
 TELEGRAM_PRIVATE_CHANNEL_ID, TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_OWNER_ID, TELEGRAM_ADMIN_IDS — каналы для подписки, админских сообщений, владельца и список ID админов.
 

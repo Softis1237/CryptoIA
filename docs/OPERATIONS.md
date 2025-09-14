@@ -1,5 +1,7 @@
 ## Операции и наблюдаемость
 
+Подробнее о Telegram-боте см. TELEGRAM_BOT.md.
+
 Запуск стека:
 
 ```
@@ -19,6 +21,15 @@ docker compose run --rm pipeline python -m pipeline.orchestration.agent_flow --s
 
 - HTTP эндпоинт `http://localhost:8000/health` возвращает `OK`, если доступны Postgres и S3.
 - При `FAIL` проверьте логи контейнеров и настройки подключения.
+
+Анализ последних метрик:
+
+```
+make analyze ARGS="price data/prices.parquet"
+```
+
+Выведет JSON с последними индикаторами цены. Аналогично доступны команды `orderflow`, `supply-demand` и `patterns` для соответствующих данных.
+
 
 Метрики Prometheus:
 - Укажите `PROM_PUSHGATEWAY_URL`.
