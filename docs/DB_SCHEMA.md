@@ -98,9 +98,11 @@
 
 Назначение: хранение кратких уроков/выжимок для MasterAgent, полученных из последних `run_summaries`.
 
-Схема (см. `migrations/030_agent_lessons.sql`):
-- `created_at TIMESTAMPTZ`, `scope TEXT` (по умолчанию `global`), `lesson_text TEXT`, `meta JSONB`.
+Схема (см. `migrations/030_agent_lessons.sql`, `037_agent_lessons_structured.sql`):
+- `created_at TIMESTAMPTZ`, `scope TEXT` (по умолчанию `global`), `lesson_text TEXT`, `meta JSONB DEFAULT '{}'::jsonb`.
+- Частичный уникальный индекс `uq_agent_lessons_scope_hash` предотвращает дублирование карточек с одинаковым `meta->>'hash'` внутри одного `scope`.
 
 Получение и наполнение:
 - MCP инструмент `compress_memory(n?, scope?)` вызывает MemoryCompressor, который агрегирует последние N записей `run_summaries` в 3–7 уроков и сохраняет их.
+- Hash урока сохраняется в `meta->>'hash'`, что позволяет фильтровать дубликаты на уровне БД.
 - MCP инструмент `get_lessons(n?)` возвращает последние уроки.
