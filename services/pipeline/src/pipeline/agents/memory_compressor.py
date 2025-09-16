@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+
+import statistics
+
+
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Tuple
 
 from ..mcp.client import call_tool as _call_tool
-from ..infra.db import insert_agent_lesson
+from ..infra.db import insert_agent_lesson, insert_agent_lesson_metrics
 from ..reasoning.llm import call_openai_json
 
 
@@ -136,10 +140,20 @@ def _outcome_summary(outcome: Any) -> Tuple[str, str]:
     return insight, action
 
 
+
+def _fallback_lessons(
+    rows: Iterable[dict[str, Any]]
+) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
+    """Локальное сжатие памяти, когда LLM недоступна или вернула пустой JSON."""
+
+    lessons: list[dict[str, str]] = []
+    stats: dict[str, dict[str, Any]] = {}
+
 def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
     """Локальное сжатие памяти, когда LLM недоступна или вернула пустой JSON."""
 
     lessons: list[dict[str, str]] = []
+
     for row in rows:
         final = row.get("final") or {}
         regime = str(final.get("regime") or "").strip()
@@ -183,6 +197,9 @@ def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
             action_parts.append(action_hint)
         risk_flags = final.get("risk_flags")
         risk_text = _join_risk_flags(risk_flags)
+
+        risk_from_flags = bool(risk_text)
+
         if risk_text:
             risk = risk_text
             action_parts.append(f"Контролировать риски: {risk_text}")
@@ -191,6 +208,90 @@ def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
 
         if not action_parts:
             action_parts.append("Сверить запуск со свежими данными рынка и обновить план.")
+
+
+        lesson = {
+            "title": title,
+            "insight": insight_text,
+            "action": " ".join(dict.fromkeys(action_parts)),
+            "risk": risk,
+        }
+        norm = json.dumps(lesson, ensure_ascii=False, sort_keys=True)
+        lesson_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        stats[lesson_hash] = {
+            "has_outcome": bool(outcome_insight),
+            "risk_from_flags": risk_from_flags,
+            "action_from_outcome": bool(action_hint),
+            "insight_length": len(lesson["insight"]),
+        }
+        lessons.append(lesson)
+        if len(lessons) >= 5:
+            break
+    return lessons, stats
+
+
+def _fallback_quality(
+    rows: Iterable[dict[str, Any]],
+    lessons: list[dict[str, str]],
+    stats: dict[str, dict[str, Any]],
+    candidate_count: int,
+) -> dict[str, Any]:
+    rows_list = list(rows)
+    metrics: dict[str, Any] = {
+        "rows_processed": len(rows_list),
+        "rows_with_outcome": sum(1 for row in rows_list if row.get("outcome")),
+        "rows_with_risk_flags": sum(
+            1
+            for row in rows_list
+            if _join_risk_flags((row.get("final") or {}).get("risk_flags"))
+        ),
+        "lessons_candidates": int(candidate_count),
+        "lessons_final": len(lessons),
+    }
+    if not lessons:
+        metrics.update(
+            {
+                "outcome_coverage": 0.0,
+                "risk_flag_ratio": 0.0,
+                "action_hint_ratio": 0.0,
+                "default_risk_ratio": 1.0,
+                "avg_insight_length": 0.0,
+                "median_insight_length": 0.0,
+                "unique_titles": 0,
+            }
+        )
+        return metrics
+
+    lengths: list[int] = []
+    outcome_flags = 0
+    risk_flags = 0
+    action_hints = 0
+    for lesson in lessons:
+        norm = json.dumps(lesson, ensure_ascii=False, sort_keys=True)
+        lesson_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        info = stats.get(lesson_hash) or {}
+        if info.get("has_outcome"):
+            outcome_flags += 1
+        if info.get("risk_from_flags"):
+            risk_flags += 1
+        if info.get("action_from_outcome"):
+            action_hints += 1
+        length = int(info.get("insight_length") or len(lesson.get("insight") or ""))
+        lengths.append(length)
+
+    total = len(lessons)
+    metrics.update(
+        {
+            "outcome_coverage": round(outcome_flags / total, 4),
+            "risk_flag_ratio": round(risk_flags / total, 4),
+            "action_hint_ratio": round(action_hints / total, 4),
+            "default_risk_ratio": round(1.0 - (risk_flags / total), 4),
+            "avg_insight_length": round(statistics.mean(lengths), 2) if lengths else 0.0,
+            "median_insight_length": round(statistics.median(lengths), 2) if lengths else 0.0,
+            "unique_titles": len({lesson.get("title") for lesson in lessons if lesson.get("title")}),
+        }
+    )
+    return metrics
 
         lessons.append(
             {
@@ -203,6 +304,7 @@ def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
         if len(lessons) >= 5:
             break
     return lessons
+
 
 
 def run(inp: MemoryCompressInput) -> Dict[str, Any]:
@@ -229,14 +331,51 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
 
     lessons = _lessons_to_unique_payloads(((data or {}).get("lessons") or []))
     mode = "llm"
+
+    metrics_payload: dict[str, Any] | None = None
+    metrics_id: int | None = None
+    if not lessons:
+        fallback_lessons, fallback_stats = _fallback_lessons(rows)
+        lessons = _lessons_to_unique_payloads(fallback_lessons)
+        mode = "fallback"
+        metrics_payload = _fallback_quality(rows, lessons, fallback_stats, len(fallback_lessons))
+        try:
+            metrics_id = insert_agent_lesson_metrics(
+                scope=inp.scope,
+                mode=mode,
+                rows_processed=metrics_payload["rows_processed"],
+                lessons_inserted=len(lessons),
+                metrics=metrics_payload,
+            )
+        except Exception:
+            metrics_id = None
+
     if not lessons:
         lessons = _lessons_to_unique_payloads(_fallback_lessons(rows))
         mode = "fallback"
+
 
     inserted = 0
     stored: list[dict[str, Any]] = []
     for ls in lessons:
         try:
+
+            norm = json.dumps(ls, ensure_ascii=False, sort_keys=True)
+            lesson_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+            meta_payload: dict[str, Any] = {
+                "source": "compressor",
+                "n": inp.n,
+                "hash": lesson_hash,
+                "mode": mode,
+                "llm_error": str(llm_error) if llm_error and mode == "fallback" else None,
+            }
+            if mode == "fallback":
+                if metrics_id:
+                    meta_payload["quality_metrics_id"] = metrics_id
+                if metrics_payload:
+                    meta_payload["quality_snapshot"] = metrics_payload
+            insert_agent_lesson(ls, scope=inp.scope, meta=meta_payload)
+
             insert_agent_lesson(
                 json.dumps(ls, ensure_ascii=False),
                 scope=inp.scope,
@@ -248,11 +387,22 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
                     "llm_error": str(llm_error) if llm_error and mode == "fallback" else None,
                 },
             )
+
             inserted += 1
             stored.append(ls)
         except Exception:
             continue
+
+    return {
+        "status": "ok",
+        "inserted": inserted,
+        "lessons": stored,
+        "mode": mode,
+        "metrics": metrics_payload,
+    }
+
     return {"status": "ok", "inserted": inserted, "lessons": stored, "mode": mode}
+
 
 
 def main():
