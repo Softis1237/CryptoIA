@@ -6,17 +6,44 @@ from datetime import datetime
 from typing import List
 
 from loguru import logger
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update  # noqa: E501
-from telegram.ext import (  # noqa: E501
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-)
+
+try:  # pragma: no cover - provides lightweight fallback for tests without telegram
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update  # type: ignore
+    from telegram.ext import (  # type: ignore
+        Application,
+        CallbackQueryHandler,
+        CommandHandler,
+        ContextTypes,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    class InlineKeyboardButton:  # minimal stub for tests
+        def __init__(self, text: str, callback_data: str | None = None):
+            self.text = text
+            self.callback_data = callback_data
+
+    class InlineKeyboardMarkup:  # minimal stub for tests
+        def __init__(self, keyboard):
+            self.inline_keyboard = keyboard
+
+    class _DummyContext:
+        DEFAULT_TYPE = object
+
+    ContextTypes = _DummyContext()  # type: ignore[assignment]
+
+    def _missing(*_, **__):  # pragma: no cover - fail only when actual bot run
+        raise RuntimeError("python-telegram-bot is required to run the Telegram bot")
+
+    class Application:  # type: ignore[assignment]
+        @staticmethod
+        def builder():
+            _missing()
+
+    CallbackQueryHandler = CommandHandler = _missing  # type: ignore[assignment]
+    Update = object  # type: ignore[assignment]
 
 from ..infra.config import settings
 from ..infra.db import get_conn
-from ..trading.publish_telegram import publish_message_to
+from .publisher import publish_message_to
 from .storage import load_user_settings, save_user_setting
 
 

@@ -7,7 +7,7 @@ Core runtime
 - pipeline: Python code for data ingestion, features, models, ensembles, risk and publishing. Usually invoked by the coordinator on schedule, but you can run tasks ad‑hoc via docker compose run.
 - coordinator: Scheduler loop that triggers the twice‑daily forecast pipeline (00:00 and 12:00 in TIMEZONE). Also pushes metrics and optionally retrains models.
 - bot: Telegram bot for subscriptions (Stars), direct messages, promo codes, and user insights collection. It can publish forecasts either to a channel or as DMs.
-- signal_bot: Interactive Telegram bot for signals, news and user settings. Run `python -m pipeline.telegram_bot.bot` inside the pipeline container; stores per-user prefs in Redis and reuses publish_telegram functions.
+- signal_bot: Interactive Telegram bot for signals, news and user settings. Run `python -m pipeline.telegram_bot.bot` inside the pipeline container; публикации выполняет модуль `pipeline.telegram_bot.publisher`.
 
   Supports RU/EN localization via gettext with message templates in `pipeline/telegram_bot/messages.py`.
   Compile `.po` files to `.mo` with `msgfmt` during deployment; binary `.mo` files are not stored in git.

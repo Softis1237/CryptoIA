@@ -2619,7 +2619,7 @@ def run_release_flow(
         from datetime import datetime, timezone
 
         from ..models.calibration_runtime import calibrate_proba as _calib
-        from ..trading.publish_telegram import publish_message, publish_photo_from_s3
+        from ..telegram_bot.publisher import publish_message, publish_photo_from_s3
         from ..utils.calibration import calibrate_proba_by_uncertainty
 
         try:

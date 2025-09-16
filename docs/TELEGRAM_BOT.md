@@ -112,8 +112,8 @@ PRO: активна до 2024‑08‑01
 
 ### Архитектура
 - Сервис `bot` основан на [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) и работает как отдельный контейнер.
-- Публикация сигналов выполняется модулем `publish_telegram.py`; он берёт готовый текст и графики из S3 и отправляет их в канал или личные сообщения.
-- Подписки и права доступа хранятся в PostgreSQL; модуль `subscriptions.py` периодически отзывает истёкшие приглашения.
+- Публикация сигналов выполняется модулем `telegram_bot/publisher.py`; он берёт готовый текст и графики из S3 и отправляет их в канал или личные сообщения.
+- Подписки и права доступа хранятся в PostgreSQL; модуль `telegram_bot/subscriptions.py` периодически отзывает истёкшие приглашения.
 - Реактивные сигналы real‑time (rt_master) также публикуются через этот бот.
 
 ### Команды
@@ -151,7 +151,7 @@ PRO: активна до 2024‑08‑01
    ```
 5. Нажмите `/start` в боте и отправьте тестовое сообщение:
    ```bash
-   docker compose run --rm pipeline python -m pipeline.trading.publish_telegram "test"
+   docker compose run --rm pipeline python -m pipeline.telegram_bot.publisher "test"
    ```
 
 ### Типовые ошибки

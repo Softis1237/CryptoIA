@@ -1618,6 +1618,204 @@ def get_affiliate_balance(partner_user_id: int) -> int:
             return int(row[0] or 0) if row else 0
 
 
+# --- Strategic agents verdicts ---------------------------------------------
+
+def upsert_strategic_verdict(
+    agent_name: str,
+    symbol: str,
+    ts,
+    verdict: str,
+    confidence: float | None = None,
+    meta: dict | None = None,
+) -> None:
+    sql = (
+        "INSERT INTO strategic_verdicts (agent_name, symbol, ts, verdict, confidence, meta) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (agent_name, symbol, ts) DO UPDATE SET verdict=excluded.verdict, confidence=excluded.confidence, meta=excluded.meta"
+    )
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name, symbol, ts, verdict, confidence, _Json(meta or {})))
+
+
+def fetch_latest_strategic_verdict(agent_name: str, symbol: str) -> dict | None:
+    sql = (
+        "SELECT ts, verdict, confidence, meta FROM strategic_verdicts WHERE agent_name=%s AND symbol=%s "
+        "ORDER BY ts DESC LIMIT 1"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name, symbol))
+            row = cur.fetchone()
+            if not row:
+                return None
+            ts, verdict, conf, meta = row
+            return {
+                "ts": ts.isoformat() if ts else "",
+                "verdict": str(verdict or ""),
+                "confidence": float(conf or 0.0) if conf is not None else None,
+                "meta": meta or {},
+            }
+
+
+# --- Knowledge Core (pgvector) ---------------------------------------------
+
+def ensure_vector() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+
+def upsert_knowledge_doc(
+    doc_id: str,
+    source: str | None,
+    title: str | None,
+    chunk_index: int | None,
+    content: str | None,
+    embedding: list[float],
+    meta: dict | None = None,
+) -> None:
+    ensure_vector()
+    dim = len(embedding)
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    sql = (
+        "INSERT INTO knowledge_docs (doc_id, source, title, chunk_index, content, dim, embedding, meta) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s) "
+        "ON CONFLICT (doc_id) DO UPDATE SET source=excluded.source, title=excluded.title, chunk_index=excluded.chunk_index, content=excluded.content, dim=excluded.dim, embedding=excluded.embedding, meta=excluded.meta"
+    )
+    from psycopg2.extras import Json as _Json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (doc_id, source, title, chunk_index, content, dim, vec, _Json(meta or {})))
+
+
+def query_knowledge_similar(embedding: list[float], k: int = 5) -> list[dict]:
+    ensure_vector()
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    sql = (
+        "SELECT doc_id, source, title, chunk_index, content, (embedding <-> %s::vector) AS distance "
+        "FROM knowledge_docs ORDER BY embedding <-> %s::vector LIMIT %s"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (vec, vec, int(k)))
+            rows = cur.fetchall() or []
+            for r in rows:
+                doc_id, source, title, chunk_index, content, dist = r
+                out.append(
+                    {
+                        "doc_id": str(doc_id),
+                        "source": str(source or ""),
+                        "title": str(title or ""),
+                        "chunk_index": int(chunk_index or 0),
+                        "content": str(content or ""),
+                        "distance": float(dist or 0.0),
+                    }
+                )
+    return out
+
+
+# --- Strategic details (normalized) ----------------------------------------
+
+def upsert_smc_details(
+    agent_name: str,
+    symbol: str,
+    ts,
+    entry_low: float | None,
+    entry_high: float | None,
+    invalidation: float | None,
+    target: float | None,
+) -> None:
+    sql = (
+        "INSERT INTO smc_verdict_details (agent_name, symbol, ts, entry_low, entry_high, invalidation, target) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (agent_name, symbol, ts) DO UPDATE SET entry_low=excluded.entry_low, entry_high=excluded.entry_high, invalidation=excluded.invalidation, target=excluded.target"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name, symbol, ts, entry_low, entry_high, invalidation, target))
+
+
+def upsert_whale_details(
+    agent_name: str,
+    symbol: str,
+    ts,
+    exchange_netflow: float | None,
+    whale_txs: int | None,
+    large_trades: int | None,
+) -> None:
+    sql = (
+        "INSERT INTO whale_verdict_details (agent_name, symbol, ts, exchange_netflow, whale_txs, large_trades) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (agent_name, symbol, ts) DO UPDATE SET exchange_netflow=excluded.exchange_netflow, whale_txs=excluded.whale_txs, large_trades=excluded.large_trades"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name, symbol, ts, exchange_netflow, whale_txs, large_trades))
+
+
+# --- Alpha Hunter ------------------------------------------------------------
+
+def insert_elite_trades(rows: Iterable[dict]) -> int:
+    sql = (
+        "INSERT INTO elite_leaderboard_trades (id, source, trader_id, symbol, side, entry_price, ts, pnl, meta) "
+        "VALUES (COALESCE(%(id)s, uuid_generate_v4()), %(source)s, %(trader_id)s, %(symbol)s, %(side)s, %(entry_price)s, %(ts)s, %(pnl)s, %(meta)s)"
+    )
+    from psycopg2.extras import Json as _Json
+    count = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(sql, {
+                    "id": r.get("id"),
+                    "source": r.get("source"),
+                    "trader_id": r.get("trader_id"),
+                    "symbol": r.get("symbol"),
+                    "side": r.get("side"),
+                    "entry_price": r.get("entry_price"),
+                    "ts": r.get("ts"),
+                    "pnl": r.get("pnl"),
+                    "meta": _Json(r.get("meta") or {}),
+                })
+                count += cur.rowcount
+    return count
+
+
+def insert_alpha_snapshot(trade_id: str, context: dict) -> None:
+    from psycopg2.extras import Json as _Json
+    sql = "INSERT INTO alpha_snapshots (trade_id, context_json) VALUES (%s, %s)"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (trade_id, _Json(context or {})))
+
+
+def upsert_alpha_strategy(name: str, definition: dict, backtest_metrics: dict | None, status: str = "active") -> None:
+    from psycopg2.extras import Json as _Json
+    sql = (
+        "INSERT INTO alpha_strategies (name, definition_json, backtest_metrics_json, status) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (name) DO UPDATE SET definition_json=EXCLUDED.definition_json, backtest_metrics_json=EXCLUDED.backtest_metrics_json, status=EXCLUDED.status"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (name, _Json(definition or {}), _Json(backtest_metrics or {}), status))
+
+
+def fetch_active_alpha_strategies() -> list[dict]:
+    sql = "SELECT name, definition_json, backtest_metrics_json FROM alpha_strategies WHERE status='active' ORDER BY created_at DESC"
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(sql)
+                for name, d, m in (cur.fetchall() or []):
+                    out.append({"name": str(name), "definition": d or {}, "metrics": m or {}})
+            except Exception:
+                pass
+    return out
+
+
 def list_user_payments(user_id: int, limit: int = 5) -> list[tuple[str, int, str]]:
     ensure_payments_table()
     sql = "SELECT created_at, amount, status FROM payments WHERE user_id=%s ORDER BY created_at DESC LIMIT %s"

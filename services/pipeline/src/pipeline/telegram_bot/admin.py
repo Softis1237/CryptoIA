@@ -11,7 +11,7 @@ from ..infra.db import (
     delete_content_item,
     add_news_item,
 )
-from ..trading.subscriptions import sweep_and_revoke_channel_access
+from .subscriptions import sweep_and_revoke_channel_access
 from ..infra.s3 import upload_bytes
 from .menus import _t, _user_lang, _is_admin
 
@@ -168,4 +168,3 @@ async def handle_admin_files(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Файл добавлен в новости")
     except Exception:
         pass
-

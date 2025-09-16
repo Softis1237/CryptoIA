@@ -14,7 +14,7 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 from ..infra.s3 import download_bytes, upload_bytes
-ёimport os
+import os
 import numpy as np
 
 

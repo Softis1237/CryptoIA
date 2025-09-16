@@ -12,6 +12,7 @@
 - scenarios/* — генератор сценариев (LLM/эвристика) с контекстом
 - reasoning/* — объяснения и арбитраж (LLM/эвристика) с памятью/доверием
 - trading/* — карточка сделки, верификатор, paper/live исполнение, оптимизатор, risk‑loop
+- trading/confidence.py — агрегатор уверенности (конфиг из DB), лог факторов
 - infra/* — БД/pgvector, S3, метрики, логгер, http‑ретраи, feature store (Redis)
 - ops/* — Prometheus/Grafana/Windmill/Prom‑alerts
 - migrations/* — SQL‑схемы
@@ -25,8 +26,8 @@
 1) Ingest (prices/news/…)
 2) FeaturesCalc (тех+контекст)
 3) Regime/SimilarPast/Models→Ensemble
-4) Scenarios/Chart
-5) TradeRecommendation→Verifier
+4) Scenarios/Chart (+ AlertPriority)
+5) TradeRecommendation→Confidence→Verifier
 6) Validation Router + валидаторы (trade/regime/llm)
 7) Debate/Explain, Risk Estimator
 8) Publish (Telegram) + persist (DB) + metrics

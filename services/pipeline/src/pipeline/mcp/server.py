@@ -41,6 +41,8 @@ from ..agents.memory_compressor import MemoryCompressInput as _MCInput
 from ..agents.memory_compressor import run as _run_memory_compress
 from ..agents.cognitive_architect import CognitiveArchitectInput as _CAInput
 from ..agents.cognitive_architect import run as _run_cognitive
+from ..agents.knowledge_core import BuildInput as _KBuild, QueryInput as _KQuery
+from ..agents.knowledge_core import build as _k_build, query as _k_query
 
 
 def _read_features(features_s3: str) -> pd.DataFrame:
@@ -234,6 +236,19 @@ def tool_get_chart_reasoning(params: Dict[str, Any]) -> Dict[str, Any]:
     return _run_cr(_CRI(features_path_s3=s3))
 
 
+def tool_knowledge_build(params: Dict[str, Any]) -> Dict[str, Any]:
+    sources = list(params.get("sources") or [])
+    chunk_size = int(params.get("chunk_size", 1200))
+    chunk_overlap = int(params.get("chunk_overlap", 200))
+    return _k_build(_KBuild(sources=sources, chunk_size=chunk_size, chunk_overlap=chunk_overlap))
+
+
+def tool_knowledge_query(params: Dict[str, Any]) -> Dict[str, Any]:
+    q = str(params.get("query", ""))
+    top_k = int(params.get("top_k", 5))
+    return _k_query(_KQuery(query=q, top_k=top_k))
+
+
 TOOLS = {
     "get_features_tail": tool_get_features_tail,
     "levels_quantiles": tool_levels_quantiles,
@@ -248,6 +263,8 @@ TOOLS = {
     "get_lessons": tool_get_lessons,
     "run_cognitive_architect": tool_run_cognitive_architect,
     "get_chart_reasoning": tool_get_chart_reasoning,
+    "knowledge_build": tool_knowledge_build,
+    "knowledge_query": tool_knowledge_query,
 }
 
 

@@ -201,6 +201,41 @@ services:
       timeout: 5s
       retries: 5
 
+  whale_stream:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.agents.whale_stream
+    restart: unless-stopped
+    environment:
+      - CCXT_EXCHANGE=binance
+      - STREAM_SYMBOL=${STREAM_SYMBOL:-BTC/USDT}
+      - WHALE_TRADE_USD=${WHALE_TRADE_USD:-250000}
+      - WHALE_POLL_SEC=${WHALE_POLL_SEC:-5}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/healthz\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  onchain_webhook:
+    build:
+      context: ./services/pipeline
+    env_file: .env
+    depends_on:
+      - postgres
+    command: -m pipeline.agents.onchain_webhook
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/healthz\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   rt_master:
     build:
       context: ./services/pipeline

@@ -7,7 +7,7 @@ import pytest
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 )
-from pipeline.trading import publish_telegram as pt  # noqa: E402
+from pipeline.telegram_bot import publisher as pt  # noqa: E402
 
 
 # Fixture to provide dummy telegram.Bot
@@ -81,7 +81,7 @@ sys.path.insert(
 )
 
 import pytest  # noqa: E402
-from pipeline.trading import publish_telegram as pt  # noqa: E402
+from pipeline.telegram_bot import publisher as pt  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -126,11 +126,11 @@ def _setup_bot(monkeypatch):
     telegram_mod = types.SimpleNamespace(Bot=FakeBot)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
 
-    subs_mod = types.ModuleType("pipeline.trading.subscriptions")
+    subs_mod = types.ModuleType("pipeline.telegram_bot.subscriptions")
     subs_mod.sweep_and_revoke_channel_access = lambda: None
     monkeypatch.setitem(
         sys.modules,
-        "pipeline.trading.subscriptions",
+        "pipeline.telegram_bot.subscriptions",
         subs_mod,
     )
 

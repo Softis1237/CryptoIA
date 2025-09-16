@@ -7,7 +7,7 @@ import sys
 def main() -> None:
     if "/app/src" not in sys.path:
         sys.path.append("/app/src")
-    from pipeline.trading.subscriptions import send_renew_reminders
+    from pipeline.telegram_bot.subscriptions import send_renew_reminders
 
     c = send_renew_reminders(hours_before=24)
     print(f"reminders={c}")

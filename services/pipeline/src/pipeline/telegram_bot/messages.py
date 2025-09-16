@@ -1,4 +1,9 @@
 # flake8: noqa
+from __future__ import annotations
+
+import gettext
+import os
+from pathlib import Path
 from typing import Dict
 
 from pydantic import BaseModel
@@ -231,12 +236,6 @@ _MESSAGES = MESSAGES.model_dump()
 
 def _t(lang_code: str, key: str, **kwargs) -> str:
     return (_MESSAGES.get(lang_code, _MESSAGES["ru"]).get(key, key)).format(**kwargs)
-
-from __future__ import annotations
-
-import gettext
-import os
-from pathlib import Path
 
 _LOCALE_DIR = Path(__file__).resolve().parent / "locale"
 _DEFAULT_LANG = "en"

@@ -637,17 +637,6 @@ async def plan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-        _, _, item_id = data.partition(":")
-        item_id = item_id.replace("news_del:", "")
-        try:
-            from ..infra.db import delete_content_item
-            delete_content_item(item_id)
-            await q.edit_message_text("Удалено.")
-        except Exception:
-            await q.edit_message_text("Ошибка удаления.")
-        return
-
-
 async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -1379,4 +1368,3 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception(f"insight handle error: {e}")
         await update.message.reply_text("Error" if lang == "en" else "Ошибка")
-

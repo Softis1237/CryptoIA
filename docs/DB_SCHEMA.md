@@ -14,8 +14,14 @@
 - onchain_signals — ончейн метрики
 - futures_metrics — фьючерсные метрики
 - features_index — эмбеддинги окон (pgvector)
+- knowledge_docs — база знаний (чанки документов + эмбеддинги pgvector)
 - agents_predictions — JSON‑результаты агентов
 - agents_metrics — числовые метрики агентов (Prometheus‑friendly)
+- strategic_verdicts — последние вердикты стратегических агентов (SMC/Whale): (agent_name, symbol, ts, verdict, confidence, meta)
+- smc_verdict_details / whale_verdict_details — нормализованные метрики стратегов
+- elite_leaderboard_trades — сделки топ‑трейдеров (source/trader_id/symbol/side/ts/pnl)
+- alpha_snapshots — контекстные снимки рынка вокруг сделок элит‑трейдеров
+- alpha_strategies — формализованные стратегии Alpha Hunter
 - validation_reports — итог многоуровневой валидации
 - backtest_results — результаты бэктестов валидатора
 - model_registry — версии моделей с параметрами/метриками/путями

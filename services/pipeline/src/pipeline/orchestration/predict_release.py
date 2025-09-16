@@ -44,7 +44,7 @@ from ..reporting.release_report import save_release_report
 from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios_llm
 from ..similarity.similar_past import SimilarPastInput
 from ..similarity.similar_past import run as run_similar
-from ..trading.publish_telegram import (
+from ..telegram_bot.publisher import (
     publish_code_block_json,
     publish_message,
     publish_photo_from_s3,

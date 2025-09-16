@@ -42,6 +42,16 @@ NEWS_POLL_SEC = float(os.getenv("TRIGGER_NEWS_POLL_SEC", "120"))
 NEWS_POLL_ENABLE = os.getenv("TRIGGER_NEWS_POLL_ENABLE", "0") in {"1", "true", "True"}
 NEWS_POLL_WINDOW_H = int(os.getenv("TRIGGER_NEWS_WINDOW_H", "1"))
 
+# Price-based triggers
+ATR_FACTOR = float(os.getenv("TRIGGER_ATR_FACTOR", "3.0"))
+MOMENTUM_5M_PCT = float(os.getenv("TRIGGER_MOMENTUM_5M_PCT", "0.005"))  # 0.5%
+PATTERNS_ENABLE = os.getenv("TRIGGER_PATTERNS_ENABLE", "1") in {"1", "true", "True"}
+
+# Derivatives anomalies
+DERIV_ENABLE = os.getenv("TRIGGER_DERIV_ENABLE", "1") in {"1", "true", "True"}
+DERIV_OI_JUMP_PCT = float(os.getenv("TRIGGER_DERIV_OI_JUMP_PCT", "0.05"))  # 5%
+DERIV_FUNDING_ABS = float(os.getenv("TRIGGER_DERIV_FUNDING_ABS", "0.01"))  # 1%
+
 
 def _now_ts() -> int:
     return int(datetime.now(timezone.utc).timestamp())
@@ -244,6 +254,124 @@ def _check_l2_triggers() -> None:
         logger.debug(f"L2 check failed: {e}")
 
 
+def _fetch_ohlcv(symbol: str, timeframe: str, limit: int = 120) -> list[list[float]]:
+    try:
+        ex = getattr(ccxt, os.getenv("CCXT_PROVIDER", "binance"))({"enableRateLimit": True})
+        data = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=max(10, min(1000, int(limit))))
+        return data or []
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"fetch_ohlcv failed: {e}")
+        return []
+
+
+def _calc_atr_ema(ohlcv: list[list[float]], period: int = 14) -> tuple[float, float]:
+    import pandas as pd
+    if not ohlcv:
+        return 0.0, 0.0
+    df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "volume"]).astype(float)
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / float(period), adjust=False).mean().fillna(0.0)
+    atr_last = float(atr.iloc[-1]) if len(atr) else 0.0
+    atr_avg60 = float(atr.tail(60).mean()) if len(atr) >= 2 else atr_last
+    return atr_last, atr_avg60
+
+
+def _maybe_trigger_volatility() -> None:
+    try:
+        ohlcv = _fetch_ohlcv(SYMBOL, timeframe="1m", limit=120)
+        if not ohlcv:
+            return
+        atr_last, atr_avg = _calc_atr_ema(ohlcv, period=14)
+        if atr_avg <= 0:
+            return
+        ratio = float(atr_last) / float(atr_avg)
+        if ratio >= ATR_FACTOR and _cooldown_ok("ATR_SPIKE"):
+            _publish("ATR_SPIKE", {"ratio": ratio, "atr_last": atr_last, "atr_avg": atr_avg})
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"ATR trigger failed: {e}")
+
+
+def _maybe_trigger_momentum() -> None:
+    try:
+        ohlcv = _fetch_ohlcv(SYMBOL, timeframe="1m", limit=10)
+        if len(ohlcv) < 6:
+            return
+        p_now = float(ohlcv[-1][4])
+        p_5m = float(ohlcv[-6][4])
+        if p_5m <= 0:
+            return
+        ch = (p_now - p_5m) / p_5m
+        if abs(ch) >= MOMENTUM_5M_PCT and _cooldown_ok("MOMENTUM"):
+            _publish("MOMENTUM", {"change_5m": ch, "p_now": p_now, "p_5m": p_5m})
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Momentum trigger failed: {e}")
+
+
+def _maybe_trigger_patterns() -> None:
+    if not PATTERNS_ENABLE:
+        return
+    try:
+        import pandas as pd
+        from ..features.features_patterns import detect_patterns as _detect
+
+        ohlcv = _fetch_ohlcv(SYMBOL, timeframe="5m", limit=60)
+        if len(ohlcv) < 10:
+            return
+        df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "volume"])
+        pats = _detect(df)
+        # Fire on strongest fresh patterns
+        to_check = [
+            ("pat_engulfing_bull", "PATTERN_BULL_ENGULF"),
+            ("pat_engulfing_bear", "PATTERN_BEAR_ENGULF"),
+            ("pat_hammer", "PATTERN_HAMMER"),
+            ("pat_shooting_star", "PATTERN_SHOOTING_STAR"),
+        ]
+        for col, kind in to_check:
+            s = pats.get(col)
+            if s is not None and int(s.iloc[-1]) == 1 and _cooldown_ok(kind):
+                _publish(kind, {"tf": "5m", "name": col})
+                break  # one pattern at a time
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Patterns trigger failed: {e}")
+
+
+def _maybe_trigger_derivatives() -> None:
+    if not DERIV_ENABLE:
+        return
+    try:
+        from ..data.ingest_futures import IngestFuturesInput as _FI, run as _run_fut
+
+        out = _run_fut(_FI(run_id=str(_now_ts()), slot="rt", symbol=SYMBOL))
+        meta = getattr(out, "futures_meta", None)
+        if not meta:
+            return
+        oi = float(getattr(meta, "open_interest", 0.0) or 0.0)
+        fr = float(getattr(meta, "funding_rate", 0.0) or 0.0)
+        # Compare to cached last values to detect jumps
+        try:
+            prev_oi_raw = get_key("rt:deriv:oi")
+            prev_oi = float(prev_oi_raw) if prev_oi_raw is not None else None
+        except Exception:
+            prev_oi = None
+        if prev_oi is not None and prev_oi > 0 and oi > 0:
+            ch = (oi - prev_oi) / prev_oi
+            if abs(ch) >= DERIV_OI_JUMP_PCT and _cooldown_ok("DERIV_OI_JUMP"):
+                _publish("DERIV_OI_JUMP", {"change": ch, "oi": oi, "prev": prev_oi})
+        # Funding absolute threshold
+        if abs(fr) >= DERIV_FUNDING_ABS and _cooldown_ok("DERIV_FUNDING"):
+            _publish("DERIV_FUNDING", {"funding_rate": fr})
+        # Update cache
+        try:
+            setex("rt:deriv:oi", 3600, str(oi))
+        except Exception:
+            pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Derivatives trigger failed: {e}")
+
+
 def _update_trigger_priorities() -> None:
     if not ADAPTIVE_LEARNING:
         return
@@ -306,6 +434,12 @@ def main() -> None:
                 _publish("DELTA_SPIKE", info2)
             # L2 triggers
             _check_l2_triggers()
+            # Price-based triggers
+            _maybe_trigger_volatility()
+            _maybe_trigger_momentum()
+            _maybe_trigger_patterns()
+            # Derivatives anomalies
+            _maybe_trigger_derivatives()
             # News triggers best-effort
             _maybe_news_triggers()
             # Lightweight news polling (internal, writes to DB and may emit NEWS after that)

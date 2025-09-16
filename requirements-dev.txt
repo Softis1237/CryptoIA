@@ -1,0 +1,13 @@
+pytest
+requests
+beautifulsoup4
+pypdf
+ccxt
+sentence-transformers
+openai
+loguru
+pandas
+pyarrow
+matplotlib
+fastapi
+httpx

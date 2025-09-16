@@ -8,6 +8,7 @@ import pandas as pd
 from ..infra.s3 import download_bytes
 from .llm import call_openai_json
 from ..infra.db import fetch_technical_patterns, fetch_agent_config
+from ..agents.knowledge_core import query as _rag_query, QueryInput as _RagIn
 
 
 @dataclass
@@ -141,7 +142,20 @@ def run(inp: ChartReasoningInput) -> Dict[str, Any]:
     params = cfg.get("parameters") or {}
     model = params.get("model") if isinstance(params, dict) else None
     temperature = float(params.get("temperature", 0.2)) if isinstance(params, dict) else 0.2
-    usr = (f"Snapshot: {snap}\n" f"Patterns (meaning): {present}")
+    # Optional RAG enrichment
+    rag_txt = ""
+    try:
+        import os as _os
+        if _os.getenv("RAG_ENRICH", "1") in {"1", "true", "True"}:
+            q = "technical analysis " + ", ".join([p.get("name","") for p in present][:5])
+            k = int(_os.getenv("RAG_TOPK", "3"))
+            got = _rag_query(_RagIn(query=q, top_k=k))
+            tops = (got or {}).get("top") or []
+            if tops:
+                rag_txt = "\nRAG context:" + "\n".join([f"- {t.get('title')}: {t.get('content')[:280]}" for t in tops])
+    except Exception:
+        rag_txt = ""
+    usr = (f"Snapshot: {snap}\n" f"Patterns (meaning): {present}{rag_txt}")
     data = call_openai_json(sys_prompt, usr, model=model, temperature=temperature)
     # Minimal validation
     out = {

@@ -20,6 +20,8 @@ jobs:
         run: black --check .
       - name: Run ruff
         run: ruff check .
+      - name: Python compile step
+        run: python -m compileall services/pipeline/src
       - name: Run mypy (pipeline only)
         run: |
           pip install -r services/pipeline/requirements.txt
