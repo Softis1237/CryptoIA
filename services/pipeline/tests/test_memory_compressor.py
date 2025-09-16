@@ -57,7 +57,9 @@ def test_run_structures_lessons_and_filters_duplicates(monkeypatch):
     assert calls[0][2]["mode"] == "llm"
     assert calls[0][2]["llm_error"] is None
     assert "hash" in calls[0][2]
+
     assert "quality_snapshot" not in calls[0][2]
+
 
 
 def test_run_uses_fallback_when_llm_fails(monkeypatch):
@@ -88,6 +90,7 @@ def test_run_uses_fallback_when_llm_fails(monkeypatch):
 
     stored: list[tuple[dict, dict]] = []
 
+
     def fake_insert(lesson, scope: str, meta: dict):
         stored.append((lesson, meta))
 
@@ -97,20 +100,28 @@ def test_run_uses_fallback_when_llm_fails(monkeypatch):
         metrics_calls.append((scope, mode, rows_processed, lessons_inserted, metrics))
         return 42
 
+    def fake_insert(text: str, scope: str, meta: dict):
+        stored.append((json.loads(text), meta))
+
+
     def boom(*_args, **_kwargs):
         raise RuntimeError("llm down")
 
     monkeypatch.setattr(memory_compressor, "_call_tool", fake_tool)
     monkeypatch.setattr(memory_compressor, "insert_agent_lesson", fake_insert)
     monkeypatch.setattr(memory_compressor, "call_openai_json", boom)
+
     monkeypatch.setattr(memory_compressor, "insert_agent_lesson_metrics", fake_metrics)
+
 
     out = memory_compressor.run(memory_compressor.MemoryCompressInput(n=2, scope="ops"))
 
     assert out["status"] == "ok"
     assert out["mode"] == "fallback"
+
     assert out["metrics"]["lessons_final"] == 1
     assert out["metrics"]["risk_flag_ratio"] == 1.0
+
     assert out["inserted"] == 1
     assert len(stored) == 1
 
@@ -121,6 +132,8 @@ def test_run_uses_fallback_when_llm_fails(monkeypatch):
     assert meta["mode"] == "fallback"
     assert meta["llm_error"]
     assert "hash" in meta
+
     assert meta["quality_metrics_id"] == 42
     assert meta["quality_snapshot"]["rows_processed"] == 1
     assert metrics_calls == [("ops", "fallback", 1, 1, out["metrics"])]
+

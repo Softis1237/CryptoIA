@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+
 import statistics
+
+
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Tuple
@@ -137,6 +140,7 @@ def _outcome_summary(outcome: Any) -> Tuple[str, str]:
     return insight, action
 
 
+
 def _fallback_lessons(
     rows: Iterable[dict[str, Any]]
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
@@ -144,6 +148,12 @@ def _fallback_lessons(
 
     lessons: list[dict[str, str]] = []
     stats: dict[str, dict[str, Any]] = {}
+
+def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Локальное сжатие памяти, когда LLM недоступна или вернула пустой JSON."""
+
+    lessons: list[dict[str, str]] = []
+
     for row in rows:
         final = row.get("final") or {}
         regime = str(final.get("regime") or "").strip()
@@ -187,7 +197,9 @@ def _fallback_lessons(
             action_parts.append(action_hint)
         risk_flags = final.get("risk_flags")
         risk_text = _join_risk_flags(risk_flags)
+
         risk_from_flags = bool(risk_text)
+
         if risk_text:
             risk = risk_text
             action_parts.append(f"Контролировать риски: {risk_text}")
@@ -196,6 +208,7 @@ def _fallback_lessons(
 
         if not action_parts:
             action_parts.append("Сверить запуск со свежими данными рынка и обновить план.")
+
 
         lesson = {
             "title": title,
@@ -280,6 +293,19 @@ def _fallback_quality(
     )
     return metrics
 
+        lessons.append(
+            {
+                "title": title,
+                "insight": insight_text,
+                "action": " ".join(dict.fromkeys(action_parts)),
+                "risk": risk,
+            }
+        )
+        if len(lessons) >= 5:
+            break
+    return lessons
+
+
 
 def run(inp: MemoryCompressInput) -> Dict[str, Any]:
     # Pull recent summaries via MCP tool to reuse existing code path
@@ -305,6 +331,7 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
 
     lessons = _lessons_to_unique_payloads(((data or {}).get("lessons") or []))
     mode = "llm"
+
     metrics_payload: dict[str, Any] | None = None
     metrics_id: int | None = None
     if not lessons:
@@ -323,10 +350,16 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
         except Exception:
             metrics_id = None
 
+    if not lessons:
+        lessons = _lessons_to_unique_payloads(_fallback_lessons(rows))
+        mode = "fallback"
+
+
     inserted = 0
     stored: list[dict[str, Any]] = []
     for ls in lessons:
         try:
+
             norm = json.dumps(ls, ensure_ascii=False, sort_keys=True)
             lesson_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()
             meta_payload: dict[str, Any] = {
@@ -342,10 +375,24 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
                 if metrics_payload:
                     meta_payload["quality_snapshot"] = metrics_payload
             insert_agent_lesson(ls, scope=inp.scope, meta=meta_payload)
+
+            insert_agent_lesson(
+                json.dumps(ls, ensure_ascii=False),
+                scope=inp.scope,
+                meta={
+                    "source": "compressor",
+                    "n": inp.n,
+                    "hash": hashlib.sha256(json.dumps(ls, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+                    "mode": mode,
+                    "llm_error": str(llm_error) if llm_error and mode == "fallback" else None,
+                },
+            )
+
             inserted += 1
             stored.append(ls)
         except Exception:
             continue
+
     return {
         "status": "ok",
         "inserted": inserted,
@@ -353,6 +400,9 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
         "mode": mode,
         "metrics": metrics_payload,
     }
+
+    return {"status": "ok", "inserted": inserted, "lessons": stored, "mode": mode}
+
 
 
 def main():
