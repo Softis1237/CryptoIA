@@ -43,6 +43,7 @@ def test_run_structures_lessons_and_filters_duplicates(monkeypatch):
     out = memory_compressor.run(memory_compressor.MemoryCompressInput(n=3, scope="desk"))
 
     assert out["status"] == "ok"
+    assert out["mode"] == "llm"
     # Первый урок — словарь из LLM, второй — нормализованная строка
     assert out["lessons"][0]["title"] == "Risk limits"
     assert out["lessons"][1]["insight"].startswith("Не усреднять")
@@ -53,4 +54,60 @@ def test_run_structures_lessons_and_filters_duplicates(monkeypatch):
     assert stored_payload["title"] == "Risk limits"
     assert calls[0][1] == "desk"
     assert calls[0][2]["n"] == 3
+    assert calls[0][2]["mode"] == "llm"
+    assert calls[0][2]["llm_error"] is None
     assert "hash" in calls[0][2]
+
+
+def test_run_uses_fallback_when_llm_fails(monkeypatch):
+    rows = [
+        {
+            "run_id": "run-42",
+            "created_at": "2024-01-01T12:00:00",
+            "final": {
+                "slot": "london",
+                "regime": "trend_up",
+                "e4": {"proba_up": 0.63},
+                "e12": {"proba_up": 0.55},
+                "risk_flags": ["volatility_spike", "news_risk"],
+                "ta": {
+                    "technical_sentiment": "bullish",
+                    "key_observations": ["Бычий импульс от поддержки"],
+                },
+            },
+            "outcome": {
+                "4h": {"direction_correct": False, "error_pct": 0.02},
+            },
+        }
+    ]
+
+    def fake_tool(name, payload):
+        assert name == "get_recent_run_summaries"
+        return {"items": rows}
+
+    stored: list[tuple[dict, dict]] = []
+
+    def fake_insert(text: str, scope: str, meta: dict):
+        stored.append((json.loads(text), meta))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(memory_compressor, "_call_tool", fake_tool)
+    monkeypatch.setattr(memory_compressor, "insert_agent_lesson", fake_insert)
+    monkeypatch.setattr(memory_compressor, "call_openai_json", boom)
+
+    out = memory_compressor.run(memory_compressor.MemoryCompressInput(n=2, scope="ops"))
+
+    assert out["status"] == "ok"
+    assert out["mode"] == "fallback"
+    assert out["inserted"] == 1
+    assert len(stored) == 1
+
+    payload, meta = stored[0]
+    assert "Режим" in payload["insight"]
+    assert "Контролировать" in payload["action"]
+    assert payload["risk"] == "volatility_spike, news_risk"
+    assert meta["mode"] == "fallback"
+    assert meta["llm_error"]
+    assert "hash" in meta
