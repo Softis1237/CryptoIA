@@ -64,6 +64,7 @@ docker compose run --rm pipeline python -m pipeline.orchestration.predict_releas
     • Alt‑данные: модуль ingest_altdata собирает тренды Google, открытый интерес CME, опционы, данные ликвидности и RSS события. Включается флагом ENABLE_ALT_DATA=1 и требует ключей Quandl/Coinglass.
     • Регулярные retrain/feedback: скрипт pipeline.ops.feedback_metrics собирает факт результов предсказаний, рассчитывает ошибки, тэги коренных причин и пушит агрегаты в Prometheus. Его можно запускать раз в день (см. ops/windmill/flows/feedback_metrics_daily.py).
     • Многоуровневая валидация: существуют валидаторы (trade_validator, regime_validator, llm_validator), которые могут отклонять сделки или прогнозы. Они вызываются координатором, если активирован ENABLE_LLM_VALIDATOR и настроен FLOWISE_VALIDATE_URL.
+    • Векторный бэктест: `python -m pipeline.cli.backtest <prices.csv> --strategy pipeline.trading.backtest.strategies:MovingAverageCrossStrategy` запускает симуляцию биржи с учётом комиссий, проскальзывания и частичных исполнений и формирует JSON-отчёт о метриках.
 
 Тестирование
 ------------
