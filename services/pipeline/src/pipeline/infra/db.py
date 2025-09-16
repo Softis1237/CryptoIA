@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple
@@ -1395,12 +1396,70 @@ def insert_pattern_metrics(
 
 # --- Lessons (compressed memory) -------------------------------------------
 
-def insert_agent_lesson(lesson_text: str, scope: str = "global", meta: dict | None = None) -> None:
-    sql = "INSERT INTO agent_lessons (lesson_text, scope, meta) VALUES (%s, %s, %s)"
+def insert_agent_lesson(lesson: dict | str, scope: str = "global", meta: dict | None = None) -> None:
+    sql = (
+        "INSERT INTO agent_lessons "
+        "(lesson_text, scope, meta, lesson, title, insight, action, risk) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+    from psycopg2.extras import Json as _Json
+
+    title = insight = action = risk = None
+    lesson_json = None
+    if isinstance(lesson, dict):
+        lesson_json = lesson
+        title = str(lesson.get("title") or "").strip() or None
+        insight = str(lesson.get("insight") or "").strip() or None
+        action = str(lesson.get("action") or "").strip() or None
+        risk = str(lesson.get("risk") or "").strip() or None
+        lesson_text = json.dumps(lesson, ensure_ascii=False)
+    else:
+        lesson_text = str(lesson)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    lesson_text,
+                    scope,
+                    _Json(meta or {}),
+                    _Json(lesson_json) if lesson_json is not None else None,
+                    title,
+                    insight,
+                    action,
+                    risk,
+                ),
+            )
+
+
+def insert_agent_lesson_metrics(
+    scope: str,
+    mode: str,
+    rows_processed: int,
+    lessons_inserted: int,
+    metrics: dict | None = None,
+) -> int:
+    sql = (
+        "INSERT INTO agent_lesson_metrics "
+        "(scope, mode, rows_processed, lessons_inserted, metrics) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id"
+    )
     from psycopg2.extras import Json as _Json
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (lesson_text, scope, _Json(meta or {})))
+            cur.execute(
+                sql,
+                (
+                    scope,
+                    str(mode or "unknown"),
+                    int(rows_processed),
+                    int(lessons_inserted),
+                    _Json(metrics or {}),
+                ),
+            )
+            row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def fetch_recent_agent_lessons(n: int = 5) -> list[dict]:
