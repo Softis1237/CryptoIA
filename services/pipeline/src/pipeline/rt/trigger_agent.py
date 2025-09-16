@@ -3,54 +3,166 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from loguru import logger
 
 from ..data.ingest_order_flow import IngestOrderFlowInput, run as run_of
 from .queue import publish_trigger, get_key, setex, incrby
-from ..infra.db import get_conn
+from ..infra.db import get_conn, fetch_agent_config
 from ..infra.metrics import push_values
 from ..infra.health import start_background as start_health_server
 from ..data.ingest_news import IngestNewsInput as _NI, run as _run_news
 from ..infra.db import insert_news_signals as _insert_news, insert_news_facts as _insert_facts
-import ccxt
+from ..utils.ccxt_helpers import (
+    fetch_ohlcv as ccxt_fetch_ohlcv,
+    fetch_order_book as ccxt_fetch_order_book,
+)
 
 
-SYMBOL = os.getenv("TRIGGER_SYMBOL", os.getenv("PAPER_SYMBOL", "BTC/USDT"))
-WINDOW_SEC = int(os.getenv("ORDERFLOW_WINDOW_SEC", "60"))
-POLL_SLEEP = float(os.getenv("TRIGGER_POLL_SLEEP", "5.0"))
-VOL_FACTOR = float(os.getenv("TRIGGER_VOL_SPIKE_FACTOR", "3.0"))
-DELTA_ABS_MIN = float(os.getenv("TRIGGER_DELTA_BASE_MIN", "20.0"))  # in base units (e.g., BTC)
-COOLDOWN_SEC = int(os.getenv("TRIGGER_COOLDOWN_SEC", "300"))
-WATCH_NEWS = os.getenv("TRIGGER_WATCH_NEWS", "1") in {"1", "true", "True"}
-NEWS_IMPACT_MIN = float(os.getenv("TRIGGER_NEWS_IMPACT_MIN", "0.7"))
-ADAPTIVE_LEARNING = os.getenv("TRIGGER_ADAPTIVE", "1") in {"1", "true", "True"}
+_DEFAULT_SYMBOL = os.getenv("PAPER_SYMBOL", "BTC/USDT")
+_DEFAULT_PROVIDER = os.getenv("CCXT_PROVIDER", "binance")
+_DEFAULT_FUTURES_PROVIDER = os.getenv("FUTURES_PROVIDER", _DEFAULT_PROVIDER)
+_DEFAULT_TIMEOUT_MS = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
+
+_CONFIG_CACHE: Dict[str, Any] | None = None
+
+
+def _cfg() -> Dict[str, Any]:
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        data = fetch_agent_config("TriggerAgent") or {}
+        params = data.get("parameters") if isinstance(data, dict) else None
+        _CONFIG_CACHE = params or {}
+    return _CONFIG_CACHE
+
+
+def _param_str(key: str, env_key: str | None, default: str) -> str:
+    cfg_val = _cfg().get(key)
+    if isinstance(cfg_val, str) and cfg_val.strip():
+        return cfg_val.strip()
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            return env_val
+    return default
+
+
+def _param_float(key: str, env_key: str | None, default: float) -> float:
+    cfg_val = _cfg().get(key)
+    try:
+        if cfg_val is not None:
+            return float(cfg_val)
+    except Exception:  # noqa: BLE001
+        pass
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            try:
+                return float(env_val)
+            except Exception:  # noqa: BLE001
+                pass
+    return default
+
+
+def _param_int(key: str, env_key: str | None, default: int) -> int:
+    return int(round(_param_float(key, env_key, float(default))))
+
+
+def _param_bool(key: str, env_key: str | None, default: bool) -> bool:
+    cfg_val = _cfg().get(key)
+    if isinstance(cfg_val, bool):
+        return cfg_val
+    if isinstance(cfg_val, (int, float)):
+        return bool(cfg_val)
+    if isinstance(cfg_val, str):
+        if cfg_val.strip():
+            return cfg_val.lower() in {"1", "true", "yes", "on"}
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val is not None:
+            return env_val.lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _param_list(key: str, env_key: str | None, default: list[str] | None = None) -> list[str]:
+    cfg_val = _cfg().get(key)
+    if isinstance(cfg_val, (list, tuple)):
+        items = [str(v).strip() for v in cfg_val if str(v).strip()]
+        if items:
+            return items
+    if isinstance(cfg_val, str) and cfg_val.strip():
+        items = [v.strip() for v in cfg_val.split(",") if v.strip()]
+        if items:
+            return items
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            items = [v.strip() for v in env_val.split(",") if v.strip()]
+            if items:
+                return items
+    return list(default or [])
+
+
+SYMBOL = _param_str("symbol", "TRIGGER_SYMBOL", _DEFAULT_SYMBOL)
+WINDOW_SEC = _param_int("orderflow_window_sec", "ORDERFLOW_WINDOW_SEC", 60)
+POLL_SLEEP = _param_float("poll_sleep", "TRIGGER_POLL_SLEEP", 5.0)
+VOL_FACTOR = _param_float("vol_spike_factor", "TRIGGER_VOL_SPIKE_FACTOR", 3.0)
+DELTA_ABS_MIN = _param_float("delta_abs_min", "TRIGGER_DELTA_BASE_MIN", 20.0)
+COOLDOWN_SEC = _param_int("cooldown_sec", "TRIGGER_COOLDOWN_SEC", 300)
+WATCH_NEWS = _param_bool("watch_news", "TRIGGER_WATCH_NEWS", True)
+NEWS_IMPACT_MIN = _param_float("news_impact_min", "TRIGGER_NEWS_IMPACT_MIN", 0.7)
+ADAPTIVE_LEARNING = _param_bool("adaptive_learning", "TRIGGER_ADAPTIVE", True)
+
+PRIMARY_PROVIDER = _param_str("ccxt_provider", "CCXT_PROVIDER", _DEFAULT_PROVIDER)
+FALLBACK_PROVIDERS = _param_list("fallback_providers", "TRIGGER_FALLBACK_PROVIDERS")
+PROVIDER_CHAIN = []
+for prov in [PRIMARY_PROVIDER, *FALLBACK_PROVIDERS]:
+    if prov and prov not in PROVIDER_CHAIN:
+        PROVIDER_CHAIN.append(prov)
+if not PROVIDER_CHAIN:
+    PROVIDER_CHAIN = [_DEFAULT_PROVIDER]
+
+ORDERFLOW_PROVIDER = _param_str("orderflow_provider", "FUTURES_PROVIDER", _DEFAULT_FUTURES_PROVIDER)
+ORDERFLOW_PROVIDERS = []
+for prov in [ORDERFLOW_PROVIDER, *PROVIDER_CHAIN]:
+    if prov and prov not in ORDERFLOW_PROVIDERS:
+        ORDERFLOW_PROVIDERS.append(prov)
 
 # L2 orderbook settings
-L2_ENABLE = os.getenv("TRIGGER_L2_ENABLE", "1") in {"1", "true", "True"}
-L2_DEPTH_LEVELS = int(os.getenv("TRIGGER_L2_DEPTH_LEVELS", "50"))
-L2_NEAR_BPS = float(os.getenv("TRIGGER_L2_NEAR_BPS", "10"))
-L2_WALL_MIN_BASE = float(os.getenv("TRIGGER_L2_WALL_MIN_BASE", "50.0"))
-L2_IMBALANCE_RATIO = float(os.getenv("TRIGGER_L2_IMBALANCE_RATIO", "2.0"))
-L2_PROVIDER = os.getenv("FUTURES_PROVIDER", os.getenv("CCXT_PROVIDER", "binance"))
-L2_USE_WS = os.getenv("ORDERFLOW_USE_WS", "0") in {"1", "true", "True"}  # reuse flag
+L2_ENABLE = _param_bool("l2_enable", "TRIGGER_L2_ENABLE", True)
+L2_DEPTH_LEVELS = _param_int("l2_depth_levels", "TRIGGER_L2_DEPTH_LEVELS", 50)
+L2_NEAR_BPS = _param_float("l2_near_bps", "TRIGGER_L2_NEAR_BPS", 10.0)
+L2_WALL_MIN_BASE = _param_float("l2_wall_min_base", "TRIGGER_L2_WALL_MIN_BASE", 50.0)
+L2_IMBALANCE_RATIO = _param_float("l2_imbalance_ratio", "TRIGGER_L2_IMBALANCE_RATIO", 2.0)
+L2_PROVIDER_PRIMARY = _param_str("l2_provider", "TRIGGER_L2_PROVIDER", ORDERFLOW_PROVIDER)
+L2_PROVIDERS = []
+for prov in [L2_PROVIDER_PRIMARY, *PROVIDER_CHAIN]:
+    if prov and prov not in L2_PROVIDERS:
+        L2_PROVIDERS.append(prov)
+L2_USE_WS = _param_bool("l2_use_ws", "ORDERFLOW_USE_WS", False)
 
 # Lightweight news polling
-NEWS_POLL_SEC = float(os.getenv("TRIGGER_NEWS_POLL_SEC", "120"))
-# Explicit flag to enable background polling of news (off by default) — agent will still consume from DB
-NEWS_POLL_ENABLE = os.getenv("TRIGGER_NEWS_POLL_ENABLE", "0") in {"1", "true", "True"}
-NEWS_POLL_WINDOW_H = int(os.getenv("TRIGGER_NEWS_WINDOW_H", "1"))
+NEWS_POLL_SEC = _param_float("news_poll_sec", "TRIGGER_NEWS_POLL_SEC", 120.0)
+NEWS_POLL_ENABLE = _param_bool("news_poll_enable", "TRIGGER_NEWS_POLL_ENABLE", False)
+NEWS_POLL_WINDOW_H = _param_int("news_poll_window_h", "TRIGGER_NEWS_WINDOW_H", 1)
 
 # Price-based triggers
-ATR_FACTOR = float(os.getenv("TRIGGER_ATR_FACTOR", "3.0"))
-MOMENTUM_5M_PCT = float(os.getenv("TRIGGER_MOMENTUM_5M_PCT", "0.005"))  # 0.5%
-PATTERNS_ENABLE = os.getenv("TRIGGER_PATTERNS_ENABLE", "1") in {"1", "true", "True"}
+ATR_FACTOR = _param_float("atr_factor", "TRIGGER_ATR_FACTOR", 3.0)
+MOMENTUM_5M_PCT = _param_float("momentum_5m_pct", "TRIGGER_MOMENTUM_5M_PCT", 0.005)
+PATTERNS_ENABLE = _param_bool("patterns_enable", "TRIGGER_PATTERNS_ENABLE", True)
 
 # Derivatives anomalies
-DERIV_ENABLE = os.getenv("TRIGGER_DERIV_ENABLE", "1") in {"1", "true", "True"}
-DERIV_OI_JUMP_PCT = float(os.getenv("TRIGGER_DERIV_OI_JUMP_PCT", "0.05"))  # 5%
-DERIV_FUNDING_ABS = float(os.getenv("TRIGGER_DERIV_FUNDING_ABS", "0.01"))  # 1%
+DERIV_ENABLE = _param_bool("deriv_enable", "TRIGGER_DERIV_ENABLE", True)
+DERIV_OI_JUMP_PCT = _param_float("deriv_oi_jump_pct", "TRIGGER_DERIV_OI_JUMP_PCT", 0.05)
+DERIV_FUNDING_ABS = _param_float("deriv_funding_abs", "TRIGGER_DERIV_FUNDING_ABS", 0.01)
+
+VOL_EMA_ALPHA = _param_float("vol_ema_alpha", "TRIGGER_VOL_EMA_ALPHA", 0.03)
+NEWS_LOOKBACK_SEC = _param_int("news_lookback_sec", "TRIGGER_NEWS_LOOKBACK_SEC", 120)
+ADAPT_EVERY_SEC = _param_float("adapt_every_sec", "TRIGGER_ADAPT_EVERY_SEC", 300.0)
+CCXT_TIMEOUT_MS = _param_int("ccxt_timeout_ms", "CCXT_TIMEOUT_MS", _DEFAULT_TIMEOUT_MS)
+CCXT_RETRIES = _param_int("ccxt_retries", "CCXT_RETRIES", 3)
+CCXT_BACKOFF = _param_float("ccxt_retry_backoff_sec", "CCXT_RETRY_BACKOFF_SEC", 1.0)
 
 
 def _now_ts() -> int:
@@ -70,7 +182,7 @@ def _ema_update(key: str, x: float, alpha: float = 0.05) -> float:
 
 def _maybe_trigger_volume(meta: Dict) -> Tuple[bool, Dict]:
     total_vol = float(meta.get("total_vol", 0.0) or 0.0)
-    ema = _ema_update("rt:vol_ema", total_vol, alpha=float(os.getenv("TRIGGER_VOL_EMA_ALPHA", "0.03")))
+    ema = _ema_update("rt:vol_ema", total_vol, alpha=VOL_EMA_ALPHA)
     # Adaptive adjustment
     factor = VOL_FACTOR
     if ADAPTIVE_LEARNING:
@@ -138,7 +250,7 @@ def _maybe_news_triggers() -> None:
         return
     try:
         # poll recent high-impact news signals from DB first
-        since_sec = int(os.getenv("TRIGGER_NEWS_LOOKBACK_SEC", "120"))
+        since_sec = NEWS_LOOKBACK_SEC
         now = datetime.now(timezone.utc)
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -226,8 +338,14 @@ def _check_l2_triggers() -> None:
         return
     try:
         market = SYMBOL
-        ex = getattr(ccxt, L2_PROVIDER)({"enableRateLimit": True})
-        ob = ex.fetch_order_book(market, limit=max(5, L2_DEPTH_LEVELS))
+        ob = ccxt_fetch_order_book(
+            L2_PROVIDERS,
+            market,
+            limit=max(5, L2_DEPTH_LEVELS),
+            timeout_ms=CCXT_TIMEOUT_MS,
+            retries=CCXT_RETRIES,
+            backoff=CCXT_BACKOFF,
+        )
         bids = ob.get("bids") or []
         asks = ob.get("asks") or []
         if not bids or not asks:
@@ -256,8 +374,15 @@ def _check_l2_triggers() -> None:
 
 def _fetch_ohlcv(symbol: str, timeframe: str, limit: int = 120) -> list[list[float]]:
     try:
-        ex = getattr(ccxt, os.getenv("CCXT_PROVIDER", "binance"))({"enableRateLimit": True})
-        data = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=max(10, min(1000, int(limit))))
+        data = ccxt_fetch_ohlcv(
+            PROVIDER_CHAIN,
+            symbol,
+            timeframe,
+            limit=limit,
+            timeout_ms=CCXT_TIMEOUT_MS,
+            retries=CCXT_RETRIES,
+            backoff=CCXT_BACKOFF,
+        )
         return data or []
     except Exception as e:  # noqa: BLE001
         logger.debug(f"fetch_ohlcv failed: {e}")
@@ -418,11 +543,18 @@ def main() -> None:
     while True:
         try:
             # ingest order flow for WINDOW_SEC and compute summary
-            out = run_of(
-                IngestOrderFlowInput(
-                    run_id=str(_now_ts()), slot="rt", symbol=SYMBOL.replace("/", ""), provider=os.getenv("FUTURES_PROVIDER", os.getenv("CCXT_PROVIDER", "binance")), window_sec=WINDOW_SEC
-                )
+            of_payload = IngestOrderFlowInput(
+                run_id=str(_now_ts()),
+                slot="rt",
+                symbol=SYMBOL.replace("/", ""),
+                provider=ORDERFLOW_PROVIDER,
+                fallback_providers=[p for p in ORDERFLOW_PROVIDERS if p != ORDERFLOW_PROVIDER],
+                window_sec=WINDOW_SEC,
+                timeout_ms=CCXT_TIMEOUT_MS,
+                retries=CCXT_RETRIES,
+                retry_backoff_sec=CCXT_BACKOFF,
             )
+            out = run_of(of_payload)
             meta = out.meta
             # Volume spike
             fired, info = _maybe_trigger_volume(meta)
@@ -445,7 +577,7 @@ def main() -> None:
             # Lightweight news polling (internal, writes to DB and may emit NEWS after that)
             _maybe_poll_news_lightweight(_news_polled)
             # Periodically recompute priorities from paper PnL
-            if (time.time() - last_adapt) > float(os.getenv("TRIGGER_ADAPT_EVERY_SEC", "300")):
+            if (time.time() - last_adapt) > ADAPT_EVERY_SEC:
                 _update_trigger_priorities()
                 last_adapt = time.time()
         except Exception as e:  # noqa: BLE001

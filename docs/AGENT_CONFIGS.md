@@ -62,6 +62,72 @@
 - Повышайте `w_smc` и/или `w_whale`, если стратегические агенты показывают высокую точность в недавнем периоде.
 - Снижайте `w_news` в периоды низкой новостной волатильности.
 
+## TriggerAgent
+
+Назначение: мониторинг order flow/цены/деривативов и публикация триггеров в реальном времени.
+
+Основные параметры (ключи в `parameters`):
+
+| Ключ | Описание | Значение по умолчанию |
+|------|----------|-----------------------|
+| `symbol` | Базовый торговый инструментарий (`BTC/USDT`) | значение `PAPER_SYMBOL` или `BTC/USDT` |
+| `orderflow_window_sec` | Окно агрегации order flow в секундах | 60 |
+| `poll_sleep` | Пауза между циклами (сек) | 5.0 |
+| `vol_spike_factor` | Множитель для триггера VOL_SPIKE | 3.0 |
+| `delta_abs_min` | Порог суммарного дельта-объёма | 20.0 |
+| `cooldown_sec` | Кулдаун между однотипными триггерами | 300 |
+| `watch_news` | Включить реакцию на новости | true |
+| `news_impact_min` | Минимальный impact score для NEWS | 0.7 |
+| `adaptive_learning` | Адаптация приоритетов по PnL | true |
+| `ccxt_provider` | Основной провайдер ccxt | `CCXT_PROVIDER` / `binance` |
+| `fallback_providers` | Доп. провайдеры ccxt, список строк | [] |
+| `orderflow_provider` | Провайдер для order flow | `FUTURES_PROVIDER` |
+| `l2_provider` | Провайдер L2 стакана | `orderflow_provider` |
+| `l2_enable` | Включить L2 триггеры | true |
+| `l2_depth_levels` | Количество уровней стакана | 50 |
+| `l2_near_bps` | Радиус поиска стенок (bps) | 10 |
+| `l2_wall_min_base` | Минимальный размер стенки (base asset) | 50 |
+| `l2_imbalance_ratio` | Порог дисбаланса | 2.0 |
+| `news_poll_enable` | Фоновый опрос новостей | false |
+| `news_poll_sec` | Период фонового опроса | 120.0 |
+| `news_poll_window_h` | Окно фонового опроса (ч) | 1 |
+| `atr_factor` | Множитель ATR для ATR_SPIKE | 3.0 |
+| `momentum_5m_pct` | Порог изменения цены за 5 минут | 0.005 |
+| `patterns_enable` | Включить свечные паттерны | true |
+| `deriv_enable` | Включить деривативные аномалии | true |
+| `deriv_oi_jump_pct` | Порог изменения OI | 0.05 |
+| `deriv_funding_abs` | Порог абсолютного funding | 0.01 |
+| `vol_ema_alpha` | alpha для EMA объёма | 0.03 |
+| `news_lookback_sec` | Окно поиска новостей в БД | 120 |
+| `adapt_every_sec` | Частота перерасчёта приоритетов | 300 |
+| `ccxt_timeout_ms` | Таймаут запросов ccxt | 20000 |
+| `ccxt_retries` | Количество повторов ccxt | 3 |
+| `ccxt_retry_backoff_sec` | Базовый backoff (сек) | 1.0 |
+
+Все параметры имеют fallback на переменные окружения и дальше — на значение по умолчанию.
+
+## RealtimeMaster
+
+Назначение: основной реактор real-time сигналов (`master_reactor.py`).
+
+Параметры:
+
+- `price_providers`: список ccxt-провайдеров, которые будут опрашиваться по очереди.
+- `price_timeout_ms`: таймаут ccxt в миллисекундах (по умолчанию `CCXT_TIMEOUT_MS` или 20000).
+- `price_retries`: количество повторов при ошибке провайдера (по умолчанию `CCXT_RETRIES` или 3).
+- `price_backoff_sec`: экспоненциальный backoff между попытками (по умолчанию `CCXT_RETRY_BACKOFF_SEC` или 1.0).
+
+Пример конфигурации:
+
+```
+{
+  "price_providers": ["binance", "okx"],
+  "price_timeout_ms": 20000,
+  "price_retries": 3,
+  "price_backoff_sec": 1.0
+}
+```
+
 ## Пример вставки/обновления активной версии (Python)
 
 ```

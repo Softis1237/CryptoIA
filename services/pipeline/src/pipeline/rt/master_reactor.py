@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
@@ -17,7 +17,11 @@ from ..infra.db import (
     upsert_explanations,
     upsert_trade_suggestion,
 )
-from ..infra.db import fetch_model_trust_regime_event, fetch_model_trust_regime
+from ..infra.db import (
+    fetch_model_trust_regime_event,
+    fetch_model_trust_regime,
+    fetch_agent_config,
+)
 from ..infra.db import fetch_latest_strategic_verdict
 from ..mcp.client import call_tool
 from ..reasoning.chart_reasoning import ChartReasoningInput as _CRInput
@@ -48,6 +52,71 @@ class Trigger:
     symbol: str
     ts: int
     meta: Dict[str, Any]
+
+
+_RT_CONFIG_CACHE: Dict[str, Any] | None = None
+
+
+def _rt_cfg() -> Dict[str, Any]:
+    global _RT_CONFIG_CACHE
+    if _RT_CONFIG_CACHE is None:
+        data = fetch_agent_config("RealtimeMaster") or {}
+        params = data.get("parameters") if isinstance(data, dict) else None
+        _RT_CONFIG_CACHE = params or {}
+    return _RT_CONFIG_CACHE
+
+
+def _rt_list(key: str, env_key: str | None, default: List[str]) -> List[str]:
+    cfg_val = _rt_cfg().get(key)
+    if isinstance(cfg_val, (list, tuple)):
+        items = [str(v).strip() for v in cfg_val if str(v).strip()]
+        if items:
+            return items
+    if isinstance(cfg_val, str) and cfg_val.strip():
+        items = [v.strip() for v in cfg_val.split(",") if v.strip()]
+        if items:
+            return items
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            items = [v.strip() for v in env_val.split(",") if v.strip()]
+            if items:
+                return items
+    return list(default)
+
+
+def _rt_float(key: str, env_key: str | None, default: float) -> float:
+    cfg_val = _rt_cfg().get(key)
+    try:
+        if cfg_val is not None:
+            return float(cfg_val)
+    except Exception:  # noqa: BLE001
+        pass
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            try:
+                return float(env_val)
+            except Exception:  # noqa: BLE001
+                pass
+    return default
+
+
+def _rt_int(key: str, env_key: str | None, default: int) -> int:
+    return int(round(_rt_float(key, env_key, float(default))))
+
+
+PRICE_DEFAULT_PROVIDER = os.getenv("CCXT_PROVIDER", "binance")
+PRICE_PROVIDERS = []
+for prov in _rt_list("price_providers", "RT_PRICE_PROVIDERS", [PRICE_DEFAULT_PROVIDER]):
+    if prov and prov not in PRICE_PROVIDERS:
+        PRICE_PROVIDERS.append(prov)
+if not PRICE_PROVIDERS:
+    PRICE_PROVIDERS = [PRICE_DEFAULT_PROVIDER]
+
+PRICE_TIMEOUT_MS = _rt_int("price_timeout_ms", "CCXT_TIMEOUT_MS", 20000)
+PRICE_RETRIES = _rt_int("price_retries", "CCXT_RETRIES", 3)
+PRICE_BACKOFF = _rt_float("price_backoff_sec", "CCXT_RETRY_BACKOFF_SEC", 1.0)
 
 
 def _parse_trigger(ev: Dict[str, Any]) -> Optional[Trigger]:
@@ -105,17 +174,39 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
 
     # 1) Ingest recent prices + news (shorter windows)
     end_ts = int(now.timestamp())
-    prices = run_prices(
-        IngestPricesInput(
-            run_id=run_id,
-            slot=slot,
-            symbols=[trigger.symbol.replace("/", "")],
-            start_ts=end_ts - int(os.getenv("RT_PRICES_LOOKBACK_SEC", "172800")),  # 48h
-            end_ts=end_ts,
-            provider=os.getenv("CCXT_PROVIDER", "binance"),
-            timeframe=os.getenv("RT_TIMEFRAME", "1m"),
-        )
-    )
+    lookback_sec = int(os.getenv("RT_PRICES_LOOKBACK_SEC", "172800"))
+    price_errors: List[str] = []
+    prices = None
+    for provider in PRICE_PROVIDERS:
+        try:
+            prices = run_prices(
+                IngestPricesInput(
+                    run_id=run_id,
+                    slot=slot,
+                    symbols=[trigger.symbol.replace("/", "")],
+                    start_ts=end_ts - lookback_sec,
+                    end_ts=end_ts,
+                    provider=provider,
+                    fallback_providers=[p for p in PRICE_PROVIDERS if p != provider],
+                    timeout_ms=PRICE_TIMEOUT_MS,
+                    retries=PRICE_RETRIES,
+                    retry_backoff_sec=PRICE_BACKOFF,
+                )
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            price_errors.append(f"{provider}:{exc}")
+            try:
+                push_values(
+                    job="rt_master",
+                    values={"price_ingest_fail": 1.0},
+                    labels={"provider": provider},
+                )
+            except Exception:
+                pass
+            continue
+    if prices is None:
+        raise RuntimeError(f"Price ingestion failed: {'; '.join(price_errors) or 'no providers'}")
     news = None
     try:
         news = run_news(

@@ -9,9 +9,11 @@ import ccxt
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pydantic import BaseModel
+from loguru import logger
+from pydantic import BaseModel, Field
 
 from ..infra.s3 import upload_bytes
+from ..utils.ccxt_helpers import fetch_trades as ccxt_fetch_trades
 
 
 class IngestOrderFlowInput(BaseModel):
@@ -19,7 +21,11 @@ class IngestOrderFlowInput(BaseModel):
     slot: str
     symbol: str = "BTCUSDT"  # exchange-specific (binance: BTCUSDT)
     provider: str = "binance"
+    fallback_providers: List[str] = Field(default_factory=list)
     window_sec: int = 60
+    timeout_ms: int | None = None
+    retries: int | None = None
+    retry_backoff_sec: float | None = None
 
 
 class IngestOrderFlowOutput(BaseModel):
@@ -54,9 +60,20 @@ def _fetch_trades_rest(ex, market: str, since_ms: Optional[int], limit: int = 10
 
 
 def run(payload: IngestOrderFlowInput) -> IngestOrderFlowOutput:
-    provider = payload.provider or os.getenv("FUTURES_PROVIDER", os.getenv("CCXT_PROVIDER", "binance"))
-    timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
-    ex = getattr(ccxt, provider)({"enableRateLimit": True, "timeout": timeout_ms})
+    primary_provider = payload.provider or os.getenv("FUTURES_PROVIDER", os.getenv("CCXT_PROVIDER", "binance"))
+    fallback_cfg = payload.fallback_providers or []
+    env_fallback = os.getenv("ORDERFLOW_FALLBACK_PROVIDERS", "")
+    if env_fallback:
+        fallback_cfg.extend([p.strip() for p in env_fallback.split(",") if p.strip()])
+    providers: List[str] = []
+    for prov in [primary_provider, *fallback_cfg]:
+        if prov and prov not in providers:
+            providers.append(prov)
+    if not providers:
+        providers = ["binance"]
+    timeout_ms = int(payload.timeout_ms or os.getenv("CCXT_TIMEOUT_MS", "20000"))
+    retries = int(payload.retries or os.getenv("CCXT_RETRIES", "3"))
+    backoff = float(payload.retry_backoff_sec or os.getenv("CCXT_RETRY_BACKOFF_SEC", "1.0"))
     market = _to_ccxt_symbol(payload.symbol)
 
     rows: List[dict] = []
@@ -69,7 +86,20 @@ def run(payload: IngestOrderFlowInput) -> IngestOrderFlowOutput:
             async def _collect_ws() -> List[dict]:
                 out: List[dict] = []
                 seen: set[str] = set()
-                client = getattr(ccxtpro, provider)({"enableRateLimit": True})
+                client = None
+                last_exc: Exception | None = None
+                for prov in providers:
+                    try:
+                        client = getattr(ccxtpro, prov)({"enableRateLimit": True})
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        last_exc = exc
+                        logger.debug(f"order_flow ws init failed for {prov}: {exc}")
+                        continue
+                if client is None:
+                    if last_exc:
+                        raise last_exc
+                    return out
                 t_end = time.time() + max(1, int(payload.window_sec))
                 try:
                     while time.time() < t_end:
@@ -89,10 +119,11 @@ def run(payload: IngestOrderFlowInput) -> IngestOrderFlowOutput:
                             side = str(t.get("side") or "")
                             out.append({"ts": ts_ms // 1000, "price": price, "amount": amount, "side": side})
                 finally:
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
+                    if client is not None:
+                        try:
+                            await client.close()
+                        except Exception:
+                            pass
                 return out
 
             rows = asyncio.run(_collect_ws())
@@ -106,8 +137,21 @@ def run(payload: IngestOrderFlowInput) -> IngestOrderFlowOutput:
         since_ms: Optional[int] = None
         seen_ids: set[str] = set()
         poll_int = float(os.getenv("ORDERFLOW_POLL_SEC", "1.0"))
+        limit = int(os.getenv("ORDERFLOW_REST_LIMIT", "1000"))
         while (time.time() - start) < max(1, int(payload.window_sec)):
-            trades = _fetch_trades_rest(ex, market, since_ms)
+            try:
+                trades = ccxt_fetch_trades(
+                    providers,
+                    market,
+                    since_ms=since_ms,
+                    limit=limit,
+                    timeout_ms=timeout_ms,
+                    retries=retries,
+                    backoff=backoff,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"order_flow fetch failed: {exc}")
+                trades = []
             if trades:
                 for t in trades:
                     tid = str(t.get("id") or f"{t.get('timestamp')}-{t.get('price')}-{t.get('amount')}")
