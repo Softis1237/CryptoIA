@@ -82,6 +82,8 @@ class VectorBacktester:
             pre_fills = self.exchange.process_bar(bar)
             self._apply_fills(pre_fills)
 
+            symbol = bar.extras.get("symbol") if bar.extras else None
+            self.portfolio.update_mark_price(symbol or self.config.symbol, bar.close)
             snapshot_pre = self.portfolio.mark_to_market(bar.timestamp, store=False)
             state = PortfolioState.from_snapshot(snapshot_pre)
             state.metadata.setdefault("config_symbol", self.config.symbol)

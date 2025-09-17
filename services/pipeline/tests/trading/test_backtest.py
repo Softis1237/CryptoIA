@@ -13,12 +13,14 @@ if str(ROOT) not in sys.path:
 from pipeline.trading.backtest import (
     BacktestConfig,
     BarEvent,
+    ExecutionReport,
     ExchangeSimulator,
     OrderRequest,
     OrderSide,
     OrderType,
     run_from_dataframe,
 )
+from pipeline.trading.backtest.portfolio import build_portfolio
 
 
 def test_exchange_simulator_partial_fill() -> None:
@@ -71,3 +73,33 @@ def test_vector_backtester_runs_and_reports() -> None:
     assert "sharpe_ratio" in report.metrics
     assert report.equity_curve.shape[0] == len(df)
     assert report.trades, "Стратегия должна совершить хотя бы одну сделку"
+
+
+def test_portfolio_mark_to_market_uses_latest_price() -> None:
+    portfolio = build_portfolio(1_000.0)
+    timestamp = pd.Timestamp("2023-01-01 00:00")
+    fill = ExecutionReport(
+        order_id="1",
+        symbol="BTC/USDT",
+        side=OrderSide.BUY,
+        price=100.0,
+        quantity=1.0,
+        fee=0.0,
+        timestamp=timestamp,
+        is_partial=False,
+        remaining=0.0,
+    )
+    portfolio.process_fill(fill)
+    expected_cash = portfolio.cash
+
+    initial_snapshot = portfolio.mark_to_market(timestamp, store=False)
+    assert initial_snapshot.equity == pytest.approx(1_000.0)
+    assert initial_snapshot.positions_value == pytest.approx(100.0)
+
+    portfolio.update_mark_price("BTC/USDT", 110.0)
+    next_snapshot = portfolio.mark_to_market(timestamp + pd.Timedelta(hours=1), store=False)
+    assert next_snapshot.equity == pytest.approx(expected_cash + 110.0)
+    assert next_snapshot.positions_value == pytest.approx(110.0)
+    exposure = next_snapshot.metadata["exposure"]["BTC/USDT"]
+    assert exposure["last_price"] == pytest.approx(110.0)
+    assert exposure["market_value"] == pytest.approx(110.0)
