@@ -15,7 +15,8 @@ PostMortemAgent — агент разбора полётов, запускает
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..infra.db import insert_agent_lesson
+from ..infra.db import insert_agent_lesson, upsert_agent_lesson_embedding_by_hash
+from .embeddings import embed_text
 from ..reasoning.llm import call_openai_json
 
 
@@ -45,6 +46,12 @@ def _fallback_lesson(tr: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _compute_hash(lesson: Dict[str, str]) -> str:
+    import hashlib, json
+    norm = json.dumps(lesson, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
 def run(inp: PostMortemInput) -> Dict[str, Any]:
     tr = dict(inp.trade or {})
     sys = (
@@ -66,7 +73,16 @@ def run(inp: PostMortemInput) -> Dict[str, Any]:
         lesson_struct = None
     lesson = lesson_struct or _fallback_lesson(tr)
     try:
-        insert_agent_lesson(lesson, scope=inp.scope, meta={"source": "postmortem", "run_id": tr.get("run_id")})
+        # persist lesson with unique hash in meta for dedup and embedding upsert
+        h = _compute_hash(lesson)
+        meta = {"source": "postmortem", "run_id": tr.get("run_id"), "hash": h, "title": lesson.get("title"), "insight": lesson.get("insight"), "action": lesson.get("action"), "risk": lesson.get("risk")}
+        insert_agent_lesson(lesson, scope=inp.scope, meta=meta)
+        # embedding (best-effort)
+        try:
+            vec = embed_text(" | ".join([lesson.get("title", ""), lesson.get("insight", ""), lesson.get("action", "")]))
+            upsert_agent_lesson_embedding_by_hash(inp.scope, h, vec)
+        except Exception:
+            pass
     except Exception:
         pass
     return {"status": "ok", "lesson": lesson}
@@ -84,4 +100,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

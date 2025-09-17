@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import uuid
 from dataclasses import dataclass, field
+import os
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -23,6 +24,9 @@ class _SimulatedOrder:
     fills: List[ExecutionReport] = field(default_factory=list)
 
 
+import random
+
+
 class ExchangeSimulator:
     """Простая симуляция биржи с учётом комиссий и проскальзывания."""
 
@@ -39,6 +43,11 @@ class ExchangeSimulator:
         self.volume_limit = volume_limit
         self._open_orders: Dict[str, _SimulatedOrder] = {}
         self._current_bar: Optional[BarEvent] = None
+        # jitter in basis points (0 disables randomness)
+        try:
+            self._slippage_jitter_bps = float(os.getenv("BT_SLIPPAGE_JITTER_BPS", "0"))  # type: ignore[name-defined]
+        except Exception:
+            self._slippage_jitter_bps = 0.0
 
     def reset(self) -> None:
         self._open_orders.clear()
@@ -178,7 +187,11 @@ class ExchangeSimulator:
         if self.slippage <= 0:
             return float(price)
         adjust = 1.0 + self.slippage if side == OrderSide.BUY else 1.0 - self.slippage
-        return float(price * adjust)
+        px = float(price * adjust)
+        if self._slippage_jitter_bps and self._slippage_jitter_bps > 0:
+            jitter = (random.uniform(-1.0, 1.0)) * (self._slippage_jitter_bps / 1e4)
+            px *= (1.0 + jitter)
+        return float(px)
 
     @property
     def open_orders(self) -> Dict[str, _SimulatedOrder]:

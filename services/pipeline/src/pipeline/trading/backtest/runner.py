@@ -61,6 +61,7 @@ class VectorBacktester:
         feed: DataFeed,
         strategy: Strategy,
         exchange: Optional[ExchangeSimulator] = None,
+        context_provider: Optional["HistoricalContextProvider"] = None,
     ) -> None:
         self.config = config
         self.feed = feed
@@ -71,10 +72,17 @@ class VectorBacktester:
             slippage=config.slippage,
             volume_limit=config.volume_limit,
         )
+        try:
+            if getattr(config, "slippage_jitter_bps", 0.0):
+                # pass-through jitter to exchange instance
+                self.exchange._slippage_jitter_bps = float(config.slippage_jitter_bps)
+        except Exception:
+            pass
         self.portfolio: Portfolio = build_portfolio(config.starting_cash)
         self.report_builder = ReportBuilder()
         self._history: List[BarEvent] = []
         self._last_trade_idx = 0
+        self._ctx = context_provider
 
     def run(self) -> BacktestReport:
         for bar in self.feed:
@@ -87,6 +95,12 @@ class VectorBacktester:
             snapshot_pre = self.portfolio.mark_to_market(bar.timestamp, store=False)
             state = PortfolioState.from_snapshot(snapshot_pre)
             state.metadata.setdefault("config_symbol", self.config.symbol)
+            # attach historical context if provider is present
+            if self._ctx is not None:
+                try:
+                    state.metadata["context"] = self._ctx.at(bar.timestamp)
+                except Exception:
+                    state.metadata["context"] = None
 
             orders = self.strategy.on_bar(bar, tuple(self._history), state)
             for order in orders:

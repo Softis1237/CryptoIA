@@ -149,11 +149,6 @@ def _fallback_lessons(
     lessons: list[dict[str, str]] = []
     stats: dict[str, dict[str, Any]] = {}
 
-def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
-    """Локальное сжатие памяти, когда LLM недоступна или вернула пустой JSON."""
-
-    lessons: list[dict[str, str]] = []
-
     for row in rows:
         final = row.get("final") or {}
         regime = str(final.get("regime") or "").strip()
@@ -208,7 +203,6 @@ def _fallback_lessons(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
 
         if not action_parts:
             action_parts.append("Сверить запуск со свежими данными рынка и обновить план.")
-
 
         lesson = {
             "title": title,
@@ -293,18 +287,6 @@ def _fallback_quality(
     )
     return metrics
 
-        lessons.append(
-            {
-                "title": title,
-                "insight": insight_text,
-                "action": " ".join(dict.fromkeys(action_parts)),
-                "risk": risk,
-            }
-        )
-        if len(lessons) >= 5:
-            break
-    return lessons
-
 
 
 def run(inp: MemoryCompressInput) -> Dict[str, Any]:
@@ -374,19 +356,10 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
                     meta_payload["quality_metrics_id"] = metrics_id
                 if metrics_payload:
                     meta_payload["quality_snapshot"] = metrics_payload
-            insert_agent_lesson(ls, scope=inp.scope, meta=meta_payload)
-
-            insert_agent_lesson(
-                json.dumps(ls, ensure_ascii=False),
-                scope=inp.scope,
-                meta={
-                    "source": "compressor",
-                    "n": inp.n,
-                    "hash": hashlib.sha256(json.dumps(ls, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
-                    "mode": mode,
-                    "llm_error": str(llm_error) if llm_error and mode == "fallback" else None,
-                },
-            )
+            if mode == "fallback":
+                insert_agent_lesson(json.dumps(ls, ensure_ascii=False), scope=inp.scope, meta=meta_payload)
+            else:
+                insert_agent_lesson(ls, scope=inp.scope, meta=meta_payload)
 
             inserted += 1
             stored.append(ls)
@@ -401,7 +374,6 @@ def run(inp: MemoryCompressInput) -> Dict[str, Any]:
         "metrics": metrics_payload,
     }
 
-    return {"status": "ok", "inserted": inserted, "lessons": stored, "mode": mode}
 
 
 

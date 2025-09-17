@@ -181,9 +181,33 @@ SMC‑зоны и визуализация
 
 `features/features_smc.py` — детекторы зон Smart Money Concepts (OB/FVG/Liquidity/Breaker) и сохранение в БД `smc_zones` (миграция `039_smc_zones.sql`).
 `reporting/charts.py:plot_price_with_smc_zones` — отрисовка зон поверх цены, артефакт `smc_zones.png` в S3.
+Флаг `SMC_V2=1` включает режим, при котором SMCAnalyst использует уже сохранённые в БД зоны и последние сигналы WhaleWatcher (без запросов сырых OHLC). Это упрощает воспроизводимость и контроль качества.
 
 Пост‑анализ сделок
 ------------------
 
 `agents/post_mortem.py` — агент, автоматически создающий «урок» после закрытия сделки.
 В бумажной торговле (`paper_trading`) запуск происходит сразу после закрытия позиции (SL/TP/horizon), в метаданные включается `run_id` исходной рекомендации (если доступен).
+
+Live Portfolio Manager и динамический сайзинг
+--------------------------------------------
+
+`trading/live_portfolio_manager.py` — live‑учёт портфеля через ccxt (или paper_* БД для отладки):
+- Методы: `get_position(symbol)`, `total_equity()`, `free_balance()`; кэширование через `LIVE_PM_CACHE_SEC`.
+- Включение live‑режима для рекомендаций: `PORTFOLIO_LIVE=1`.
+
+`executor_live` поддерживает динамический размер позиции, если `EXEC_DYNAMIC_SIZE=1`:
+- Размер = `equity * EXEC_RISK_PER_TRADE / |entry - sl|` (в базовой валюте);
+- Ретраи при сбоях биржи (tenacity), оповещение админа при критических ошибках.
+
+Петля обратной связи
+--------------------
+
+`agents/lessons.get_relevant_lessons(context)` — выбирает последние релевантные уроки (до 5) и передаёт их в арбитра дебатов `debate_arbiter.debate(..., lessons=...)`.
+Это помогает избежать повторения ошибок в похожих рыночных ситуациях.
+
+Бэктестер: проскальзывание и контекст
+------------------------------------
+
+- Случайное проскальзывание включается параметром CLI `--slippage-jitter-bps` (либо переменная `BT_SLIPPAGE_JITTER_BPS`).
+- `trading/backtest/context.HistoricalContextProvider` позволяет подмешивать исторические новости/он‑чейн на каждый бар — стратегия получает их через `portfolio_state.metadata['context']`.

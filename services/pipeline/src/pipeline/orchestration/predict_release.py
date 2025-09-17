@@ -35,6 +35,7 @@ from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
 from ..reasoning.debate_arbiter import debate
+from ..agents.lessons import get_relevant_lessons
 from ..reasoning.explain import explain_short
 from ..regime.predictor_ml import predict as predict_regime_ml
 from ..regime.regime_detect import Regime
@@ -268,11 +269,23 @@ def predict_release(
 
     # Explain / Debate (LLM if доступен)
     news_points = [f"{s.title} ({s.source})" for s in n_out.news_signals[:3]]
+    # Feedback loop: учесть релевантные уроки из недавнего прошлого
+    lessons = []
+    try:
+        lessons = get_relevant_lessons({
+            "regime": regime.label,
+            "news": news_points,
+            "ta": {"atr": m4.atr, "interval": e4.interval},
+        })
+    except Exception:
+        lessons = []
+
     deb_text, risk_flags = debate(
         rationale_points=e4.rationale_points,
         regime=regime.label,
         news_top=news_points,
         neighbors=neighbors,
+        lessons=lessons,
     )
     expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
 

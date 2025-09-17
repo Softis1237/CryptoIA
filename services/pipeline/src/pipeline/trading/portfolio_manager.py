@@ -138,7 +138,7 @@ class DBStorage(PortfolioStorage):
         try:
             with self._get_conn() as conn:  # type: ignore[misc]
                 with conn.cursor() as cur:
-                    cur.execute(sql)
+                    cur.execute(sql, ())
                     row = cur.fetchone()
                     return float(row[0] or 0.0)
         except Exception:
@@ -151,7 +151,7 @@ class DBStorage(PortfolioStorage):
         try:
             with self._get_conn() as conn:  # type: ignore[misc]
                 with conn.cursor() as cur:
-                    cur.execute(sql)
+                    cur.execute(sql, ())
                     row = cur.fetchone()
                     return float(row[0] or 0.0)
         except Exception:
@@ -218,4 +218,3 @@ class PortfolioManager:
             return ("scale_in", "confidence_ok") if confidence >= th else ("ignore", "low_confidence")
         # Противоположная позиция запрещает открытие новой
         return "ignore", "opposite_position_open"
-

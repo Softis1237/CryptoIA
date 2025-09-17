@@ -9,6 +9,7 @@ import time
 import pandas as pd
 
 from ..infra.s3 import upload_bytes
+from ..infra.db import fetch_smc_zones, fetch_latest_strategic_verdict, fetch_latest_regime_label
 from ..features.features_smc import (
     detect_order_blocks,
     detect_fvg,
@@ -109,7 +110,48 @@ def _ob_fvg(df5: pd.DataFrame) -> Optional[List[float]]:
 
 
 def run(inp: SMCInput) -> Dict[str, Any]:
-    # 4h context
+    # v2 mode: rely on structured zones + whale + regime, avoid raw OHLC if possible
+    if os.getenv("SMC_V2", "0") in {"1", "true", "True"}:
+        regime = fetch_latest_regime_label() or "range"
+        zones_15m = fetch_smc_zones(inp.symbol, "15m", status="untested", limit=50)
+        zones_1h = fetch_smc_zones(inp.symbol, "1h", status="untested", limit=50)
+        whale = fetch_latest_strategic_verdict("Whale Watcher", inp.symbol) or {}
+        whale_status = str(whale.get("verdict") or "")
+        # Simple rule: HTF up + LTF OB_BULL present + Whale bullish -> bullish setup
+        has_bull_ob = any((z.get("zone_type") == "OB_BULL" for z in zones_15m)) or any((z.get("zone_type") == "OB_BULL" for z in zones_1h))
+        has_bear_ob = any((z.get("zone_type") == "OB_BEAR" for z in zones_15m)) or any((z.get("zone_type") == "OB_BEAR" for z in zones_1h))
+        status = "NO_SETUP"
+        if regime == "trend_up" and has_bull_ob and whale_status.endswith("BULLISH"):
+            status = "SMC_BULLISH_SETUP"
+        elif regime == "trend_down" and has_bear_ob and whale_status.endswith("BEARISH"):
+            status = "SMC_BEARISH_SETUP"
+        verdict = {
+            "status": status,
+            "trend_4h": regime,
+            "zones": {"1h": zones_1h[-5:], "15m": zones_15m[-5:]},
+            "whale": whale,
+        }
+        # Persist as before
+        import json
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        date_key = now.strftime("%Y-%m-%d")
+        path = f"runs/{date_key}/{inp.slot}/smc_verdict.json"
+        upload_bytes(path, json.dumps(verdict).encode("utf-8"), content_type="application/json")
+        try:
+            upsert_strategic_verdict(
+                agent_name="SMC Analyst",
+                symbol=inp.symbol,
+                ts=now,
+                verdict=str(verdict.get("status")),
+                confidence=None,
+                meta=verdict,
+            )
+        except Exception:
+            pass
+        return verdict
+
+    # 4h context (v1 path)
     h4 = _fetch_ohlcv(inp.symbol, inp.provider, "4h", limit=200)
     if not h4:
         return {"status": "no-data"}

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import os
 from ..infra.db import fetch_agent_config
 from .portfolio_manager import PortfolioManager  # lightweight dependency
+from .live_portfolio_manager import LivePortfolioManager
 
 
 @dataclass
@@ -109,28 +110,48 @@ def run(inp: TradeRecommendInput) -> Dict:
     }
     # Optional portfolio policy overlay (no-op if disabled)
     try:
-        if os.getenv("PORTFOLIO_ENABLED", "0") in {"1", "true", "True"}:
-            pm = PortfolioManager()
-            decision, reason = pm.decide_with_existing(
-                symbol=os.getenv("EXEC_SYMBOL", "BTC/USDT"),
-                new_side=side,
-                confidence=float(card["confidence"]),
-            )
-            card["portfolio_decision"] = decision
-            card["portfolio_reason"] = reason
-            # if decision is "ignore" due to opposite position — conservatively convert to NO-TRADE
-            if decision == "ignore" and reason == "opposite_position_open":
-                card["side"] = "NO-TRADE"
-                card["reason_codes"].append("portfolio_block")
-            # if scale-in — recompute qty proportionally (half of base risk by default)
-            if decision == "scale_in":
+        use_live = os.getenv("PORTFOLIO_LIVE", "0") in {"1", "true", "True"}
+        use_db = os.getenv("PORTFOLIO_ENABLED", "0") in {"1", "true", "True"}
+        symbol = os.getenv("EXEC_SYMBOL", "BTC/USDT")
+        if use_live:
+            lpm = LivePortfolioManager()
+            # построим решение, используя ту же политику, что и у PortfolioManager
+            from .portfolio_manager import PortfolioManager as _PM
+
+            pm = _PM()
+            # временно подменим storage‑доступ через monkey, передадим позицию напрямую
+            pos = lpm.get_position(symbol)
+            if pos and pos.quantity > 0:
+                # создадим простую развязку: если есть позиция — определим решение по направлению
+                same = (pos.direction == "long" and side == "LONG") or (pos.direction == "short" and side == "SHORT")
                 try:
-                    scale = float(os.getenv("TR_SCALEIN_FRACTION", "0.5"))
+                    th = float(os.getenv("TR_SCALEIN_CONF_THRES", "0.68"))
                 except Exception:
-                    scale = 0.5
-                card["size"]["qty"] = round(card["size"]["qty"] * max(0.0, min(1.0, scale)), 6)
-                card["reason_codes"].append("portfolio_scale_in")
+                    th = 0.68
+                if same:
+                    decision, reason = ("scale_in" if float(card["confidence"]) >= th else "ignore", "confidence_ok" if float(card["confidence"]) >= th else "low_confidence")
+                else:
+                    decision, reason = ("ignore", "opposite_position_open")
+            else:
+                decision, reason = ("open", "no_position")
+        elif use_db:
+            pm = PortfolioManager()
+            decision, reason = pm.decide_with_existing(symbol=symbol, new_side=side, confidence=float(card["confidence"]))
+        else:
+            decision, reason = ("open", "disabled")
+
+        card["portfolio_decision"] = decision
+        card["portfolio_reason"] = reason
+        if decision == "ignore" and reason == "opposite_position_open":
+            card["side"] = "NO-TRADE"
+            card["reason_codes"].append("portfolio_block")
+        if decision == "scale_in":
+            try:
+                scale = float(os.getenv("TR_SCALEIN_FRACTION", "0.5"))
+            except Exception:
+                scale = 0.5
+            card["size"]["qty"] = round(card["size"]["qty"] * max(0.0, min(1.0, scale)), 6)
+            card["reason_codes"].append("portfolio_scale_in")
     except Exception:
-        # не мешаем основной логике при любых проблемах
         pass
     return card

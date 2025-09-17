@@ -16,12 +16,23 @@ def debate(
     memory: Optional[List[str]] = None,
     trust: Optional[Dict[str, float]] = None,
     ta: Optional[dict] = None,
+    lessons: Optional[List[Dict[str, str]]] = None,
 ) -> tuple[str, List[str]]:
+    lessons_txt = ""
+    try:
+        if lessons:
+            items = [f"- {l.get('title')}: {l.get('action') or l.get('insight','')[:80]}" for l in lessons[:5]]
+            if items:
+                lessons_txt = "\n".join(items)
+    except Exception:
+        lessons_txt = ""
+
     sys = (
         "You are an arbiter: distill the arguments into 3–6 grounded bullet points.\n"
         'Return JSON exactly as {"bullets":[string,...],"risk_flags":[string,...]} with no extra fields.\n'
         "Base only on model arguments, regime, top news and similar windows; do not invent numbers.\n"
         "If memory of previous releases is provided — consider it as context; if trust weights are provided — use them to prioritize arguments."
+        + ("\nConsider the following lessons learned from similar situations and avoid repeating mistakes:\n" + lessons_txt if lessons_txt else "")
     )
     usr = (
         f"Model arguments: {rationale_points}\n"

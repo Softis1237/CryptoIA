@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--maker-fee", type=float, default=0.0002)
     parser.add_argument("--taker-fee", type=float, default=0.0004)
     parser.add_argument("--slippage", type=float, default=0.0005)
+    parser.add_argument("--slippage-jitter-bps", type=float, default=0.0, help="Случайное проскальзывание (bps, ±) для элементов рынка")
     parser.add_argument("--volume-limit", type=float, default=0.25)
     parser.add_argument("--starting-cash", type=float, default=10_000.0)
     parser.add_argument("--risk-free-rate", type=float, default=0.0)
@@ -93,6 +94,7 @@ def main() -> None:
         slippage=args.slippage,
         volume_limit=args.volume_limit,
         risk_free_rate=args.risk_free_rate,
+        slippage_jitter_bps=args.slippage_jitter_bps,
     )
 
     params = _parse_strategy_params(args.strategy_param)

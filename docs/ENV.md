@@ -239,6 +239,26 @@ EXEC_ENTRY — market или limit.
 
 DRY_RUN — если 1, ордера не отправляются (бумажный режим).
 
+Live Portfolio Manager
+----------------------
+
+- PORTFOLIO_LIVE — включить учёт live‑позиций через ccxt в `trade_recommend` (0/1).
+- LIVE_PM_CACHE_SEC — TTL кэша ответов ccxt (по умолчанию 5 сек).
+- LIVE_PM_USE_PAPER — вместо ccxt читать состояние из таблиц paper_* (для отладки).
+- EXEC_DYNAMIC_SIZE — динамический размер позиции в `executor_live` на основе `EXEC_RISK_PER_TRADE`.
+- EXEC_RISK_PER_TRADE — риск на сделку (доля equity), по умолчанию 0.01.
+
+Lessons (петля обратной связи)
+------------------------------
+
+- OPENAI_EMBED_MODEL — модель эмбеддингов (по умолчанию `text-embedding-3-small`).
+- Для сохранения векторных представлений уроков требуется миграция `040_agent_lessons_vector.sql` и расширение `vector` в PostgreSQL.
+
+Vault (секреты)
+---------------
+
+- VAULT_URL, VAULT_TOKEN, VAULT_PATH_PREFIX — включают чтение секретов через `infra/secrets.get_secret`.
+
 Портфель и политики
 -------------------
 

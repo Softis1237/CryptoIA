@@ -1305,7 +1305,18 @@ def upsert_technical_pattern(
     from psycopg2.extras import Json as _Json
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (name, category, timeframe, _Json(definition or {}), description, source, float(confidence_default)))
+            cur.execute(
+                sql,
+                (
+                    name,
+                    category,
+                    timeframe,
+                    _Json(definition or {}),
+                    description,
+                    source,
+                    float(confidence_default),
+                ),
+            )
 
 
 def fetch_agent_config(agent_name: str) -> dict | None:
@@ -1479,6 +1490,94 @@ def fetch_recent_agent_lessons(n: int = 5) -> list[dict]:
                     }
                 )
     return out
+
+
+# --- Lessons embeddings (pgvector) -----------------------------------------
+def upsert_agent_lesson_embedding_by_hash(scope: str, hash_val: str, embedding: list[float]) -> None:
+    """Update lesson_embedding for a lesson identified by (scope, meta->>'hash')."""
+    ensure_vector()
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    sql = (
+        "UPDATE agent_lessons SET lesson_embedding=%s::vector WHERE scope=%s AND (meta->>'hash')=%s"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (vec, scope, hash_val))
+
+
+def fetch_agent_lessons_similar(embedding: list[float], k: int = 5, scope: str | None = None) -> list[dict]:
+    ensure_vector()
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    if scope:
+        sql = (
+            "SELECT created_at, scope, lesson_text, meta FROM agent_lessons "
+            "WHERE lesson_embedding IS NOT NULL AND scope=%s ORDER BY lesson_embedding <-> %s::vector LIMIT %s"
+        )
+        params = (scope, vec, int(k))
+    else:
+        sql = (
+            "SELECT created_at, scope, lesson_text, meta FROM agent_lessons "
+            "WHERE lesson_embedding IS NOT NULL ORDER BY lesson_embedding <-> %s::vector LIMIT %s"
+        )
+        params = (vec, int(k))
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall() or []
+            for created_at, scope, txt, meta in rows:
+                out.append(
+                    {
+                        "created_at": created_at.isoformat() if created_at else "",
+                        "scope": str(scope or "global"),
+                        "lesson_text": str(txt or ""),
+                        "meta": meta or {},
+                    }
+                )
+    return out
+
+
+# --- SMC zones fetch --------------------------------------------------------
+def fetch_smc_zones(symbol: str, timeframe: str, status: str | None = None, limit: int = 50) -> list[dict]:
+    sql = "SELECT created_at, zone_type, price_low, price_high, status, meta FROM smc_zones WHERE symbol=%s AND timeframe=%s"
+    params: list = [symbol, timeframe]
+    if status:
+        sql += " AND status=%s"
+        params.append(status)
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(int(limit))
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall() or []
+                for created_at, zt, lo, hi, st, meta in rows:
+                    out.append(
+                        {
+                            "created_at": created_at.isoformat() if created_at else "",
+                            "zone_type": str(zt or ""),
+                            "price_low": float(lo or 0.0),
+                            "price_high": float(hi or 0.0),
+                            "status": str(st or ""),
+                            "meta": meta or {},
+                        }
+                    )
+            except Exception:
+                return []
+    return out
+
+
+def fetch_latest_regime_label() -> str | None:
+    sql = "SELECT label FROM regimes ORDER BY created_at DESC LIMIT 1"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+                return str(row[0]) if row else None
+    except Exception:
+        return None
 
 def ensure_redeem_codes_table() -> None:
     sql = (

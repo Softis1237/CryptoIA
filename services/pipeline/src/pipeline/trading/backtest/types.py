@@ -110,6 +110,7 @@ class BacktestConfig:
     taker_fee: float = 0.0004
     slippage: float = 0.0005
     volume_limit: float = 0.25
+    slippage_jitter_bps: float = 0.0
     max_leverage: float = 3.0
     warmup_bars: int = 0
     data_timezone: Optional[str] = None
