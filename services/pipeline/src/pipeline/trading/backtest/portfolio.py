@@ -44,6 +44,13 @@ class Portfolio:
         self.trades: List[TradeRecord] = []
         self._last_prices: Dict[str, float] = {}
 
+    def update_mark_price(self, symbol: str, price: float) -> None:
+        """Сохраняет последнюю рыночную цену инструмента."""
+
+        if not symbol:
+            return
+        self._last_prices[symbol] = price
+
     # ------------------------------------------------------------------
     def process_fill(self, fill: ExecutionReport) -> None:
         position = self.positions.setdefault(fill.symbol, _Position(symbol=fill.symbol))
@@ -84,18 +91,21 @@ class Portfolio:
             last = self._last_prices.get(symbol, pos.average_price())
             if pos.direction == "long":
                 pnl = (last - pos.average_price()) * qty
+                market_value = last * qty
             else:
                 pnl = (pos.average_price() - last) * qty
-            positions_value += last * qty if pos.direction == "long" else last * qty
+                market_value = -last * qty
+            positions_value += market_value
             exposure[symbol] = {
                 "direction": pos.direction or "flat",
                 "quantity": qty,
                 "avg_price": pos.average_price(),
                 "last_price": last,
                 "unrealized_pnl": pnl,
+                "market_value": market_value,
                 "symbol": symbol,
             }
-        equity = self.cash + sum(ex["unrealized_pnl"] for ex in exposure.values())
+        equity = self.cash + positions_value
         leverage = 0.0
         notional = sum(abs(ex["last_price"] * ex["quantity"]) for ex in exposure.values())
         if equity > 0:
