@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import os
 from ..infra.db import fetch_agent_config
+from .portfolio_manager import PortfolioManager  # lightweight dependency
 
 
 @dataclass
@@ -106,4 +107,30 @@ def run(inp: TradeRecommendInput) -> Dict:
         "reason_codes": ["directional_bias", "atr_volatility", f"regime:{inp.regime or 'n/a'}"],
         "invalidation": "пробой SL/сигнал смены направления",
     }
+    # Optional portfolio policy overlay (no-op if disabled)
+    try:
+        if os.getenv("PORTFOLIO_ENABLED", "0") in {"1", "true", "True"}:
+            pm = PortfolioManager()
+            decision, reason = pm.decide_with_existing(
+                symbol=os.getenv("EXEC_SYMBOL", "BTC/USDT"),
+                new_side=side,
+                confidence=float(card["confidence"]),
+            )
+            card["portfolio_decision"] = decision
+            card["portfolio_reason"] = reason
+            # if decision is "ignore" due to opposite position — conservatively convert to NO-TRADE
+            if decision == "ignore" and reason == "opposite_position_open":
+                card["side"] = "NO-TRADE"
+                card["reason_codes"].append("portfolio_block")
+            # if scale-in — recompute qty proportionally (half of base risk by default)
+            if decision == "scale_in":
+                try:
+                    scale = float(os.getenv("TR_SCALEIN_FRACTION", "0.5"))
+                except Exception:
+                    scale = 0.5
+                card["size"]["qty"] = round(card["size"]["qty"] * max(0.0, min(1.0, scale)), 6)
+                card["reason_codes"].append("portfolio_scale_in")
+    except Exception:
+        # не мешаем основной логике при любых проблемах
+        pass
     return card

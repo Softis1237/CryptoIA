@@ -157,3 +157,60 @@ def plot_risk_breakdown(
     path = f"runs/{date_key}/{slot}/risk.png"
     s3_uri = upload_bytes(path, buf.getvalue(), content_type="image/png")
     return s3_uri
+
+
+def plot_price_with_smc_zones(
+    features_path_s3: str,
+    zones: list[dict],
+    title: str = "SMC zones",
+    slot: str = "manual",
+) -> str:
+    """Отрисовать ценовой график с наложением SMC‑зон (прямоугольники по уровням).
+
+    zones: [{zone_type, price_low, price_high, status}]
+    """
+    raw = download_bytes(features_path_s3)
+    table = pq.read_table(pa.BufferReader(raw))
+    df = table.to_pandas().sort_values("ts")
+    df["dt"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(df["dt"], df["close"], label="Close", color="#1f77b4", linewidth=1.2)
+
+    colors = {
+        "OB_BULL": (0.2, 0.8, 0.2, 0.15),
+        "OB_BEAR": (0.9, 0.2, 0.2, 0.15),
+        "FVG": (0.2, 0.2, 0.9, 0.12),
+        "LIQUIDITY_POOL": (0.6, 0.6, 0.6, 0.2),
+        "BREAKER": (0.9, 0.6, 0.1, 0.15),
+    }
+    for z in zones or []:
+        zt = str(z.get("zone_type") or "").upper()
+        lo = float(z.get("price_low") or 0.0)
+        hi = float(z.get("price_high") or lo)
+        if hi <= 0 and lo <= 0:
+            continue
+        c = colors.get(zt, (0.4, 0.4, 0.4, 0.12))
+        t0 = df["dt"].iloc[max(0, len(df) - 200)]  # последний участок
+        t1 = df["dt"].iloc[-1]
+        ax.fill_between([t0, t1], [lo, lo], [hi, hi], color=c, step="pre", linewidth=0.0)
+        ax.text(
+            t0, (lo + hi) / 2.0, zt, fontsize=8, color=(c[0], c[1], c[2], 0.8), va="center"
+        )
+
+    _overlay_brand(fig, ax, title)
+    ax.set_xlabel("Time (UTC)")
+    ax.set_ylabel("Price")
+    ax.grid(True, alpha=0.2)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+
+    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = f"runs/{date_key}/{slot}/smc_zones.png"
+    s3_uri = upload_bytes(path, buf.getvalue(), content_type="image/png")
+    return s3_uri

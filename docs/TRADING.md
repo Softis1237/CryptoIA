@@ -140,3 +140,50 @@ RISK_IMPROVE_PCT: минимальное улучшение цены, чтобы
 - Head & Shoulders, треугольники и флаги — фигуры, подтверждающие смену или продолжение тренда.
 
 Для каждой модели создаётся колонка `pat_<имя>` и суммарный счёт `pat_score`, который используется при расчёте прогнозов: бычьи модели увеличивают вероятность роста, медвежьи — снижают её. Чем выше `pat_score`, тем больше доверие к сигналу и вероятность его использования в торговой логике.
+
+
+Векторный бэктестер
+--------------------
+
+Для ускоренной проверки гипотез добавлен модуль `pipeline.cli.backtest`, который проигрывает исторические OHLCV‑данные в событийной манере (бар за баром) и симулирует биржу с комиссиями, проскальзыванием и частичным исполнением.
+
+Компоненты:
+- `trading/backtest/exchange_simulator.py` — обработка ордеров (market/limit/stop), maker/taker комиссии, `slippage`, ограничение объёма `volume_limit` → частичные исполнения;
+- `trading/backtest/portfolio.py` — кэш, позиции и PnL;
+- `trading/backtest/report.py` — equity curve и метрики (Win Rate, Profit Factor, Sharpe, max drawdown);
+- `trading/backtest/runner.py` — векторный цикл проигрывания данных;
+- `trading/backtest/strategies.py` — пример EMA‑стратегии и загрузка произвольной стратегии `module:Class`.
+
+CLI пример:
+```
+python -m pipeline.cli.backtest data/prices.parquet \
+  --symbol BTC/USDT \
+  --strategy pipeline.trading.backtest.strategies:MovingAverageCrossStrategy \
+  --strategy-param fast=12 --strategy-param slow=26 --strategy-param risk_fraction=0.2 \
+  --slippage 0.0005 --maker-fee 0.0002 --taker-fee 0.0004 \
+  --report out/backtest.json
+```
+
+Изоляция: в рамках CLI бэктестер не трогает prod‑БД. Для связанных сценариев используйте отдельный DSN.
+
+Портфель и риск‑политики
+------------------------
+
+Модуль `trading/portfolio_manager.py` вводит единый интерфейс `PortfolioManager` (in‑memory по умолчанию; DB при `PORTFOLIO_ENABLED=1`, миграция `038_portfolio.sql`).
+
+Интеграция с `trade_recommend` при включённом портфеле:
+- добавляются поля `portfolio_decision` (open|scale_in|ignore) и `portfolio_reason`;
+- при открытой противоположной позиции рекомендация становится `NO-TRADE` (reason `portfolio_block`);
+- при доборе размер позиции умножается на `TR_SCALEIN_FRACTION`.
+
+SMC‑зоны и визуализация
+-----------------------
+
+`features/features_smc.py` — детекторы зон Smart Money Concepts (OB/FVG/Liquidity/Breaker) и сохранение в БД `smc_zones` (миграция `039_smc_zones.sql`).
+`reporting/charts.py:plot_price_with_smc_zones` — отрисовка зон поверх цены, артефакт `smc_zones.png` в S3.
+
+Пост‑анализ сделок
+------------------
+
+`agents/post_mortem.py` — агент, автоматически создающий «урок» после закрытия сделки.
+В бумажной торговле (`paper_trading`) запуск происходит сразу после закрытия позиции (SL/TP/horizon), в метаданные включается `run_id` исходной рекомендации (если доступен).

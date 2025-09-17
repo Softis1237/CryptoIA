@@ -83,11 +83,12 @@ def compute(base_conf: float, context: Dict[str, Any]) -> ConfidenceResult:
     if alert_prio in {"high", "critical"}:
         factors["alert"] = w["alert"] * (1.0 if alert_prio == "high" else 1.4)
 
-    # Strategic agents alignment
+    # Strategic agents alignment (dynamic weight by regime)
+    trend_mult = 1.2 if regime in {"trend_up", "trend_down"} else (0.9 if regime == "range" else 1.0)
     if (side == "LONG" and smc_status.startswith("SMC_BULLISH")) or (side == "SHORT" and smc_status.startswith("SMC_BEARISH")):
-        factors["smc"] = w["smc"]
+        factors["smc"] = w["smc"] * trend_mult
     if (side == "LONG" and whale_status.endswith("BULLISH")) or (side == "SHORT" and whale_status.endswith("BEARISH")):
-        factors["whale"] = w["whale"]
+        factors["whale"] = w["whale"] * trend_mult
     # Alpha strategies support
     try:
         if isinstance(alpha_support, bool) and alpha_support:

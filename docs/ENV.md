@@ -237,7 +237,25 @@ EXEC_AMOUNT — базовый размер позиции.
 
 EXEC_ENTRY — market или limit.
 
-DRY_RUN — если 1, ордера не отправляются (бумажный режим).
+DRY_RUN — если 1, ордера не отправляются (бумажный режим).
+
+Портфель и политики
+-------------------
+
+- PORTFOLIO_ENABLED — включает учёт портфеля и политики в `trade_recommend` (0/1).
+- TR_SCALEIN_CONF_THRES — порог уверенности (0..1) для добора к существующей позиции (по умолчанию 0.68).
+- TR_SCALEIN_FRACTION — доля базового размера при доборе (по умолчанию 0.5).
+
+SMC и визуализация
+------------------
+
+- SMC_OHLC_CACHE_SEC — TTL кеша OHLCV в `SMC Analyst` (секунды).
+- SMC_SAVE_ZONES — если 1, сохранять обнаруженные зоны в таблицу `smc_zones`.
+
+Пост‑анализ сделок
+-------------------
+
+- POST_MORTEM_ENABLED — если 1, запускать PostMortemAgent после закрытия сделки и сохранять уроки в `agent_lessons`.
 
 RISK_LOOP_INTERVAL, RISK_TRAIL_PCT, RISK_IMPROVE_PCT — параметры trailing‑stop.
 

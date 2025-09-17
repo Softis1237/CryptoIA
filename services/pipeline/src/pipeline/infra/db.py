@@ -1815,6 +1815,27 @@ def upsert_whale_details(
             cur.execute(sql, (agent_name, symbol, ts, exchange_netflow, whale_txs, large_trades))
 
 
+# --- SMC zones --------------------------------------------------------------
+def insert_smc_zone(
+    symbol: str,
+    timeframe: str,
+    zone_type: str,
+    price_low: float | None,
+    price_high: float | None,
+    status: str | None = None,
+    meta: dict | None = None,
+) -> None:
+    """Insert discovered SMC zone (idempotency is best-effort via unique hash in meta)."""
+    from psycopg2.extras import Json as _Json
+    sql = (
+        "INSERT INTO smc_zones (symbol, timeframe, zone_type, price_low, price_high, status, meta) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s)"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (symbol, timeframe, zone_type, price_low, price_high, status, _Json(meta or {})))
+
+
 # --- Alpha Hunter ------------------------------------------------------------
 
 def insert_elite_trades(rows: Iterable[dict]) -> int:

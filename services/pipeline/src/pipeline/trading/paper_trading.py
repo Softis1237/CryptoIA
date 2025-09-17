@@ -181,6 +181,26 @@ def _close_position(cur, pos_id: str, exit_price: float, reason: str):
         "INSERT INTO paper_equity_curve (ts, account_id, equity) VALUES (%s, %s, %s) ON CONFLICT (ts, account_id) DO NOTHING",
         (_now_utc(), account_id, equity),
     )
+    # Post‑mortem lesson (best-effort)
+    try:
+        if os.getenv("POST_MORTEM_ENABLED", "1") in {"1", "true", "True"}:
+            cur.execute("SELECT meta_json->>'run_id' FROM paper_positions WHERE pos_id=%s", (pos_id,))
+            row = cur.fetchone()
+            run_id = row[0] if row and row[0] else None
+            context = {
+                "run_id": run_id,
+                "side": side,
+                "entry_price": entry,
+                "exit_price": float(exit_price),
+                "qty": qty,
+                "pnl": pnl,
+                "reason": reason,
+            }
+            from ..agents.post_mortem import run as post_mortem_run, PostMortemInput
+
+            post_mortem_run(PostMortemInput(trade=context))
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"post_mortem failed: {e}")
 
 
 def risk_loop(interval_s: int = 60):

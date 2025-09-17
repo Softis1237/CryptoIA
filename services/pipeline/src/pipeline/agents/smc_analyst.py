@@ -9,6 +9,13 @@ import time
 import pandas as pd
 
 from ..infra.s3 import upload_bytes
+from ..features.features_smc import (
+    detect_order_blocks,
+    detect_fvg,
+    detect_liquidity_pools,
+    detect_breaker_blocks,
+    save_zones_to_db,
+)
 from ..infra.db import upsert_strategic_verdict
 
 
@@ -148,6 +155,30 @@ def run(inp: SMCInput) -> Dict[str, Any]:
         invalidation = max(poi) + (rng_hi - rng_lo) * 0.05
         target = eq_low
 
+    # optional SMC zones (save if flag set)
+    zones_1h = []
+    zones_15m = []
+    try:
+        if os.getenv("SMC_SAVE_ZONES", "1") in {"1", "true", "True"}:
+            df4h = df4.copy()
+            # простая проекция на 1h/15m: используем 4h/15m/5m как суррогатные источники
+            zones_1h = (
+                detect_order_blocks(df4h, timeframe="1h")
+                + detect_fvg(df4h, timeframe="1h")
+                + detect_liquidity_pools(df4h)
+                + detect_breaker_blocks(df4h, timeframe="1h")
+            )
+            zones_15m = (
+                detect_order_blocks(df15, timeframe="15m")
+                + detect_fvg(df15, timeframe="15m")
+                + detect_liquidity_pools(df15)
+                + detect_breaker_blocks(df15, timeframe="15m")
+            )
+            save_zones_to_db(inp.symbol, "1h", zones_1h)
+            save_zones_to_db(inp.symbol, "15m", zones_15m)
+    except Exception:
+        zones_1h, zones_15m = [], []
+
     verdict = {
         "status": status or "NO_SETUP",
         "trend_4h": trend,
@@ -157,6 +188,7 @@ def run(inp: SMCInput) -> Dict[str, Any]:
         "entry_zone": entry_zone,
         "invalidation_level": invalidation,
         "target_liquidity": target,
+        "zones": {"1h": zones_1h[-3:], "15m": zones_15m[-3:]},
     }
 
     # Save to S3 for consumption by reactor (DB integration can be added via migrations)
