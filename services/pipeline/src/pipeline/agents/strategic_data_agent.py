@@ -12,7 +12,13 @@ from ..infra import db, metrics
 from ..infra.run_lock import slot_lock
 from ..ops.project_tasks import ensure_task
 from .base import AgentResult, BaseAgent
-from .strategic import StreamAnomalyDetector, TrustMonitor, TrustUpdate, crawl_catalogs
+from .strategic import (
+    ExistingSource,
+    StreamAnomalyDetector,
+    TrustMonitor,
+    TrustUpdate,
+    crawl_catalogs,
+)
 
 
 class StrategicDataPayload(BaseModel):
@@ -66,9 +72,10 @@ class StrategicDataAgent(BaseAgent):
                     output={"existing_sources": [src.name for src in existing]},
                 )
 
+            existing_registry = {src.name: src for src in self._trust.fetch_existing()}
             discoveries = list(self._discover(params))
             updates = self._trust.recalculate(discoveries)
-            anomalies = self._persist_and_check(discoveries, updates, params)
+            anomalies = self._persist_and_check(discoveries, updates, params, existing_registry)
             self._maybe_escalate(updates, anomalies)
         return AgentResult(
             name=self.name,
@@ -97,6 +104,7 @@ class StrategicDataAgent(BaseAgent):
         discoveries: Iterable[StrategicSource],
         updates: List[TrustUpdate],
         params: StrategicDataPayload,
+        existing_registry: dict[str, ExistingSource],
     ) -> List[str]:
         anomalies: List[str] = []
         trust_map = {upd.source_name: upd.new_score for upd in updates}
@@ -112,6 +120,23 @@ class StrategicDataAgent(BaseAgent):
                 trust_score=trust_score,
                 metadata=src.metadata,
             )
+            if src.name not in existing_registry:
+                ensure_task(
+                    summary=f"[Data] Встроить источник {src.name}",
+                    description=(
+                        f"Найден новый источник данных {src.url} (provider={src.provider})."
+                        " Проверьте схему, лимиты и авторизацию."
+                    ),
+                    priority="medium",
+                    tags=["data_source", "ingest"],
+                )
+                existing_registry[src.name] = ExistingSource(
+                    name=src.name,
+                    trust_score=trust_score,
+                    provider=src.provider,
+                    url=str(src.url),
+                    tags=src.tags,
+                )
             if self._anomaly.detect(src):
                 anomalies.append(src.name)
                 db.insert_data_source_anomaly(
@@ -150,6 +175,13 @@ class StrategicDataAgent(BaseAgent):
                 job="strategic_data_agent",
                 values={"data_source_anomaly": float(len(anomalies))},
             )
+            try:
+                db.insert_orchestrator_event(
+                    "data_anomaly",
+                    {"sources": anomalies, "run_id": params.run_id},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("failed to enqueue orchestrator event for anomalies: %s", exc)
 
 
 def main() -> None:

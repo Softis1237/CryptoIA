@@ -15,7 +15,11 @@ PostMortemAgent — агент разбора полётов, запускает
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..infra.db import insert_agent_lesson, upsert_agent_lesson_embedding_by_hash
+from ..infra.db import (
+    insert_agent_lesson,
+    insert_orchestrator_event,
+    upsert_agent_lesson_embedding_by_hash,
+)
 from .embeddings import embed_text
 from ..reasoning.llm import call_openai_json
 
@@ -77,6 +81,18 @@ def run(inp: PostMortemInput) -> Dict[str, Any]:
         h = _compute_hash(lesson)
         meta = {"source": "postmortem", "run_id": tr.get("run_id"), "hash": h, "title": lesson.get("title"), "insight": lesson.get("insight"), "action": lesson.get("action"), "risk": lesson.get("risk")}
         insert_agent_lesson(lesson, scope=inp.scope, meta=meta)
+        try:
+            insert_orchestrator_event(
+                "post_mortem_feedback",
+                {
+                    "run_id": tr.get("run_id"),
+                    "scope": inp.scope,
+                    "hash": h,
+                    "outcome": tr.get("pnl"),
+                },
+            )
+        except Exception:
+            pass
         # embedding (best-effort)
         try:
             vec = embed_text(" | ".join([lesson.get("title", ""), lesson.get("insight", ""), lesson.get("action", "")]))

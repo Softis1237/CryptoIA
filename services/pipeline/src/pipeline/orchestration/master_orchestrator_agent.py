@@ -17,6 +17,10 @@ from ..infra.run_lock import slot_lock
 from ..data.eco_calendar import fetch_upcoming_events
 from .resource_policy import ResourcePlan, ResourcePolicy
 from ..agents.master import run_master_flow
+from ..infra.db import (
+    fetch_pending_orchestrator_events,
+    mark_orchestrator_events_processed,
+)
 
 
 class OrchestratorPayload(BaseModel):
@@ -50,22 +54,56 @@ class MasterOrchestratorAgent(BaseAgent):
         params = OrchestratorPayload(**payload)
         with slot_lock(params.slot):
             events = fetch_upcoming_events(params.horizon_hours)
-            plan = self._ctx.policy.build_plan(events, slot=params.slot, force_mode=params.force_mode)
+            pending_events = fetch_pending_orchestrator_events()
+            summary_status = "processed"
+            force_mode = params.force_mode
+            if not force_mode:
+                for evt in pending_events:
+                    if evt.get("event_type") in {"data_anomaly", "safe_mode", "post_mortem_feedback"}:
+                        force_mode = "High-Alert"
+                        summary_status = "escalated"
+                        break
+            plan = self._ctx.policy.build_plan(events, slot=params.slot, force_mode=force_mode)
             summary = self._execute(plan, params, events)
+            final_mode = plan.mode
+            if summary.get("anomaly_triggered") and plan.mode != "High-Alert":
+                alert_plan = self._ctx.policy.build_plan(events, slot=params.slot, force_mode="High-Alert")
+                summary["escalated_plan"] = self._execute(alert_plan, params, events, skip_jobs={"strategic_data"})
+                final_mode = "High-Alert"
+                summary["mode"] = "High-Alert"
+            summary["pending_events"] = pending_events
+            if pending_events:
+                try:
+                    mark_orchestrator_events_processed([evt["id"] for evt in pending_events], status=summary_status)
+                except Exception:
+                    logger.exception("Failed to mark orchestrator events processed")
             push_values(
                 job="master_orchestrator",
-                values={"orchestrator_mode": 1.0 if plan.mode == "High-Alert" else 0.0},
+                values={"orchestrator_mode": 1.0 if final_mode == "High-Alert" else 0.0},
                 labels={"slot": params.slot},
             )
             return AgentResult(name=self.name, ok=True, output=summary)
 
-    def _execute(self, plan: ResourcePlan, params: OrchestratorPayload, events: Iterable[dict]) -> Dict[str, object]:
+    def _execute(
+        self,
+        plan: ResourcePlan,
+        params: OrchestratorPayload,
+        events: Iterable[dict],
+        skip_jobs: set[str] | None = None,
+    ) -> Dict[str, object]:
         results: Dict[str, object] = {"mode": plan.mode, "jobs": plan.jobs, "events": list(events)}
+        skip_jobs = skip_jobs or set()
         for job in plan.jobs:
+            if job in skip_jobs:
+                continue
             try:
                 if job == "strategic_data":
                     out = self._ctx.strategic_agent.run({"run_id": plan.run_id, "slot": "strategic_data", "keywords": params.keywords})
                     results["strategic_data"] = out.output
+                    anomalies = out.output.get("anomalies") if isinstance(out.output, dict) else None
+                    if anomalies:
+                        results["anomaly_triggered"] = True
+                        results.setdefault("alerts", {})["strategic_data"] = anomalies
                 elif job == "master_flow":
                     results["master_flow"] = run_master_flow(slot=plan.slot)
                 elif job == "memory_guardian_refresh":

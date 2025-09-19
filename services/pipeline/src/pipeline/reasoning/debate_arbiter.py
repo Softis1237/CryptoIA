@@ -18,6 +18,7 @@ def debate(
     ta: Optional[dict] = None,
     lessons: Optional[List[Dict[str, str]]] = None,
     knowledge: Optional[List[str]] = None,
+    source_trust: Optional[Dict[str, float]] = None,
 ) -> tuple[str, List[str]]:
     lessons_txt = ""
     try:
@@ -37,6 +38,15 @@ def debate(
     except Exception:
         knowledge_txt = ""
 
+    trust_sources_txt = ""
+    try:
+        if source_trust:
+            trust_sources_txt = "\n".join(
+                f"- {name}: trust={score:.2f}" for name, score in sorted(source_trust.items(), key=lambda item: item[1], reverse=True)
+            )
+    except Exception:
+        trust_sources_txt = ""
+
     sys = (
         "You are an arbiter: distill the arguments into 3–6 grounded bullet points.\n"
         'Return JSON exactly as {"bullets":[string,...],"risk_flags":[string,...]} with no extra fields.\n'
@@ -44,6 +54,7 @@ def debate(
         "If memory of previous releases is provided — consider it as context; if trust weights are provided — use them to prioritize arguments."
         + ("\nConsider the following lessons learned from similar situations and avoid repeating mistakes:\n" + lessons_txt if lessons_txt else "")
         + ("\nConsider relevant knowledge points (RAG):\n" + knowledge_txt if knowledge_txt else "")
+        + ("\nSources trust (0..1):\n" + trust_sources_txt if trust_sources_txt else "")
     )
     usr = (
         f"Model arguments: {rationale_points}\n"
@@ -52,7 +63,8 @@ def debate(
         f"Similar windows: {neighbors}\n"
         f"Memory: {memory or []}\n"
         f"Trust: {trust or {}}\n"
-        f"TA: {ta or {}}"
+        f"TA: {ta or {}}\n"
+        f"Sources: {source_trust or {}}"
     )
     raw = call_flowise_json("FLOWISE_DEBATE_URL", {"system": sys, "user": usr})
     if not raw or raw.get("status") == "error":
@@ -87,6 +99,7 @@ def multi_debate(
     model_quant: Optional[str] = None,
     ta: Optional[dict] = None,
     lessons: Optional[List[Dict[str, Any]]] = None,
+    source_trust: Optional[Dict[str, float]] = None,
 ) -> tuple[str, List[str]]:
     """Run a lightweight multi-persona debate and aggregate with the arbiter.
 
@@ -121,5 +134,16 @@ def multi_debate(
             "Модели не предоставили разногласий — используем базовые доводы по сигналам.",
         ]
     # Feed into arbiter
-    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust, ta, lessons)
+    text, flags = debate(
+        bullets_all,
+        regime,
+        news_top,
+        neighbors,
+        memory,
+        trust,
+        ta,
+        lessons,
+        knowledge=None,
+        source_trust=source_trust,
+    )
     return text, flags

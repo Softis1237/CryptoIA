@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import psycopg2
 from loguru import logger
@@ -120,6 +120,41 @@ def fetch_data_sources(limit: int = 100) -> list[dict]:
     return out
 
 
+def get_data_source(name: str) -> dict | None:
+    sql = (
+        "SELECT name, url, provider, tags, trust_score, metadata FROM data_sources "
+        "WHERE lower(name)=lower(%s) OR lower(provider)=lower(%s) LIMIT 1"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (name, name))
+            row = cur.fetchone()
+            if not row:
+                return None
+            name_v, url, provider, tags, trust_score, metadata = row
+            return {
+                "name": str(name_v or name),
+                "url": str(url or ""),
+                "provider": str(provider or ""),
+                "tags": list(tags or []),
+                "trust_score": float(trust_score or 0.0),
+                "metadata": metadata or {},
+            }
+
+
+def get_data_source_trust(name: str) -> float | None:
+    info = get_data_source(name)
+    return None if info is None else float(info.get("trust_score", 0.0))
+
+
+def is_data_source_known(name: str) -> bool:
+    sql = "SELECT 1 FROM data_sources WHERE lower(name)=lower(%s) OR lower(provider)=lower(%s) LIMIT 1"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (name, name))
+            return cur.fetchone() is not None
+
+
 def insert_data_source_task(summary: str, description: str, priority: str, tags: Iterable[str]) -> int:
     sql = (
         "INSERT INTO data_source_tasks (summary, description, priority, tags) "
@@ -132,6 +167,48 @@ def insert_data_source_task(summary: str, description: str, priority: str, tags:
             cur.execute(sql, (summary, description, priority, _Json(list(tags))))
             row = cur.fetchone()
             return int(row[0]) if row else 0
+
+
+def insert_orchestrator_event(event_type: str, payload: Dict[str, Any] | None = None) -> int:
+    sql = "INSERT INTO orchestrator_events (event_type, payload) VALUES (%s, %s) RETURNING id"
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (event_type, _Json(payload or {})))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+def fetch_pending_orchestrator_events(limit: int = 20) -> list[dict]:
+    sql = (
+        "SELECT id, event_type, payload, created_at FROM orchestrator_events "
+        "WHERE status='pending' ORDER BY created_at ASC LIMIT %s"
+    )
+    items: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(limit),))
+            for event_id, event_type, payload, created_at in cur.fetchall() or []:
+                items.append(
+                    {
+                        "id": int(event_id),
+                        "event_type": str(event_type),
+                        "payload": payload or {},
+                        "created_at": created_at,
+                    }
+                )
+    return items
+
+
+def mark_orchestrator_events_processed(ids: Iterable[int], status: str = "processed") -> None:
+    ids = [int(i) for i in ids]
+    if not ids:
+        return
+    sql = "UPDATE orchestrator_events SET status=%s, processed_at=now() WHERE id = ANY(%s)"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (status, ids))
 
 
 def ensure_affiliates_tables() -> None:

@@ -34,6 +34,7 @@ from ..infra.obs import init_sentry
 from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput
 from ..models.models import run as run_models
+from ..agents.memory_guardian_agent import MemoryGuardianAgent
 from ..reasoning.debate_arbiter import debate
 from ..agents.lessons import get_relevant_lessons
 from ..reasoning.explain import explain_short
@@ -292,6 +293,24 @@ def predict_release(
             rag_points = [h.get("title") or (h.get("content") or "")[:80] for h in hits]
     except Exception:
         rag_points = []
+
+    guardian = MemoryGuardianAgent()
+    lessons = []
+    try:
+        mg = guardian.query(
+            {
+                "scope": "trading",
+                "context": {
+                    "planned_signal": "BULLISH" if e4.y_hat >= 0 else "BEARISH",
+                    "market_regime": regime.label,
+                    "probability_up": e4.proba_up,
+                },
+                "top_k": 3,
+            }
+        )
+        lessons = mg.output.get("lessons", []) if mg and isinstance(mg.output, dict) else []
+    except Exception:
+        lessons = []
 
     deb_text, risk_flags = debate(
         rationale_points=e4.rationale_points,

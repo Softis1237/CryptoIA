@@ -22,13 +22,16 @@ import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
 from ..agents.base import AgentResult
 from ..agents.coordinator import AgentCoordinator
 from ..agents.master import run_master_flow
+from ..agents.chart_vision_agent import ChartVisionAgent
+from ..agents.memory_guardian_agent import MemoryGuardianAgent
+from ..agents.technical_synthesis_agent import TechnicalSynthesisAgent
 from ..data.ingest_news import IngestNewsInput
 from ..data.ingest_news import run as run_news
 from ..data.ingest_onchain import IngestOnchainInput
@@ -50,6 +53,7 @@ from ..infra.db import (
     fetch_predictions_for_cv,
     fetch_recent_predictions,
     fetch_user_insights_recent,
+    get_data_source_trust,
     insert_agent_metric,
     insert_backtest_result,
     upsert_agent_prediction,
@@ -110,6 +114,50 @@ def _ok(name: str, output: Any, meta: dict | None = None) -> AgentResult:
 
 def _fail(name: str, err: Exception) -> AgentResult:
     return AgentResult(name=name, ok=False, output=None, meta={"error": str(err)})
+
+
+def _indicator_snapshot(features_path: str) -> Dict[str, float]:
+    if not features_path:
+        return {}
+    try:
+        from ..infra.s3 import download_bytes
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        raw = download_bytes(features_path)
+        table = pq.read_table(pa.BufferReader(raw), columns=[
+            "ts",
+            "close",
+            "ema_20",
+            "ema_50",
+            "rsi_dynamic",
+            "atr_dynamic",
+            "bb_width_dynamic",
+            "indicator_cfg_rsi",
+            "indicator_cfg_atr",
+            "indicator_cfg_bb_window",
+            "indicator_cfg_bb_std",
+        ])
+        df = table.to_pandas().sort_values("ts").reset_index(drop=True)
+        if df.empty:
+            return {}
+        row = df.iloc[-1]
+        close = float(row.get("close", 0.0) or 0.0)
+        ema_fast = float(row.get("ema_20", 0.0) or 0.0)
+        ema_slow = float(row.get("ema_50", 0.0) or 0.0)
+        trend_strength = (ema_fast - ema_slow) / (abs(close) + 1e-9)
+        return {
+            "rsi_dynamic": float(row.get("rsi_dynamic", 50.0) or 50.0),
+            "atr_dynamic": float(row.get("atr_dynamic", 0.0) or 0.0),
+            "bb_width_dynamic": float(row.get("bb_width_dynamic", 0.0) or 0.0),
+            "trend_strength": float(trend_strength),
+            "cfg_rsi": int(row.get("indicator_cfg_rsi", 14) or 14),
+            "cfg_atr": int(row.get("indicator_cfg_atr", 14) or 14),
+            "cfg_bb_window": int(row.get("indicator_cfg_bb_window", 20) or 20),
+            "cfg_bb_std": float(row.get("indicator_cfg_bb_std", 2.0) or 2.0),
+        }
+    except Exception:
+        return {}
 
 
 class PricesAgent:
@@ -355,6 +403,41 @@ class SimilarPastAgent:
             return _ok(self.name, [r.__dict__ for r in res])
         except Exception as e:  # noqa: BLE001
             return _ok(self.name, [], meta={"error": str(e)})
+
+
+class ChartVisionFlowAgent:
+    name = "chart_vision"
+    priority = 67
+
+    def __init__(self) -> None:
+        self._agent = ChartVisionAgent()
+
+    def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
+        try:
+            image_urls = payload.get("image_urls") or []
+            if not image_urls:
+                return _ok(self.name, None, meta={"skipped": True})
+            res = self._agent.run(payload)
+            return _ok(self.name, res.output)
+        except Exception as e:  # noqa: BLE001
+            return _fail(self.name, e)
+
+
+class TechnicalSynthesisFlowAgent:
+    name = "technical_synthesis"
+    priority = 68
+
+    def __init__(self) -> None:
+        self._agent = TechnicalSynthesisAgent()
+
+    def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
+        try:
+            if not payload.get("indicators"):
+                return _ok(self.name, {}, meta={"skipped": True})
+            res = self._agent.run(payload)
+            return _ok(self.name, res.output)
+        except Exception as e:  # noqa: BLE001
+            return _fail(self.name, e)
 
 
 class ModelsAgent:
@@ -1683,6 +1766,7 @@ def run_release_flow(
 
     # Build coordinator and register agents
     co = AgentCoordinator(max_retries=0)
+    memory_guardian = MemoryGuardianAgent()
     co.register(ModelsCVAgent(), depends_on=[])  # periodic CV metrics
     co.register(BacktestAgent(), depends_on=["features"])  # simple backtest on features
     co.register(PricesAgent(), depends_on=[])
@@ -1741,6 +1825,10 @@ def run_release_flow(
         RiskEstimatorAgent(), depends_on=["features"]
     )  # risk metrics from history
     co.register(PlotAgent(), depends_on=["scenarios"])  # needs scenarios+levels
+    co.register(ChartVisionFlowAgent(), depends_on=["chart"])  # chart review
+    co.register(
+        TechnicalSynthesisFlowAgent(), depends_on=["features", "chart_vision"]
+    )  # combined TA verdict
     co.register(
         TradeAgent(), depends_on=["ensemble_4h", "models_4h", "regime"]
     )  # trade from 4h
@@ -1848,6 +1936,19 @@ def run_release_flow(
         if news_out
         else []
     )
+    source_trust: Dict[str, float] = {}
+    for sig in news_list:
+        try:
+            src_name = str(sig.get("source") or sig.get("provider") or "").strip()
+        except Exception:
+            src_name = ""
+        if not src_name or src_name in source_trust:
+            continue
+        trust_val = get_data_source_trust(src_name)
+        if trust_val is None and sig.get("provider"):
+            trust_val = get_data_source_trust(str(sig.get("provider")))
+        if trust_val is not None:
+            source_trust[src_name] = float(trust_val)
     news_facts = [f for f in (getattr(news_out, "news_facts", []) or [])]
     onchain_list = (
         [s.model_dump() for s in getattr(onchain_out, "onchain_signals", [])]
@@ -1904,6 +2005,8 @@ def run_release_flow(
         "ensemble_12h",
         "scenarios",
         "chart",
+        "chart_vision",
+        "technical_synthesis",
         "trade",
         "risk_policy",
         "backtest_validator",
@@ -2267,6 +2370,41 @@ def run_release_flow(
             }
         )  # type: ignore[attr-defined]
     chart_s3 = results["chart"].output
+    vision_output: Dict[str, Any] = {}
+    try:
+        with timed(durations, "chart_vision"):
+            payload_cv = {
+                "run_id": ctx.run_id,
+                "symbol": "BTCUSDT",
+                "slot": "chart_vision",
+                "image_urls": [chart_s3] if chart_s3 else [],
+                "regime": regime.get("label", "range"),
+            }
+            results["chart_vision"] = co._agents["chart_vision"].run(payload_cv)  # type: ignore[attr-defined]
+            vision_output = results["chart_vision"].output or {}
+    except Exception:
+        vision_output = {}
+    indicators_snapshot = _indicator_snapshot(getattr(f_out, "features_path_s3", ""))
+    synthesis_output: Dict[str, Any] = {}
+    try:
+        with timed(durations, "technical_synthesis"):
+            payload_ts = {
+                "run_id": ctx.run_id,
+                "symbol": "BTCUSDT",
+                "slot": "technical_synthesis",
+                "indicators": indicators_snapshot,
+                "smc": (
+                    results.get("smc").output
+                    if results.get("smc")
+                    else {}
+                ),
+                "vision": vision_output or {},
+                "features_meta": {"features_path_s3": getattr(f_out, "features_path_s3", "")},
+            }
+            results["technical_synthesis"] = co._agents["technical_synthesis"].run(payload_ts)  # type: ignore[attr-defined]
+            synthesis_output = results["technical_synthesis"].output or {}
+    except Exception:
+        synthesis_output = {}
     # Risk chart
     risk_chart_s3 = None
     try:
@@ -2436,7 +2574,7 @@ def run_release_flow(
         cv = _fam("models_cv", "smape_4h%", 5)
         if cv:
             smape_vals = ", ".join(f"{ts}:{v:.3f}" for ts, v in cv)
-            memory.append(f"cv smape_4h: {smape_vals}")
+        memory.append(f"cv smape_4h: {smape_vals}")
     except Exception:
         logger.exception("Failed to fetch agent metrics for models_cv")
     try:
@@ -2447,6 +2585,31 @@ def run_release_flow(
         )
     except Exception:
         trust = {}
+    if vision_output:
+        memory.append(
+            f"chart_vision bias={vision_output.get('bias')} conf={vision_output.get('confidence')}"
+        )
+    if synthesis_output:
+        verdict = synthesis_output.get("verdict", {})
+        memory.append(
+            f"tech_synthesis bias={verdict.get('bias')} conf={verdict.get('confidence')} score={verdict.get('score')}"
+        )
+    guardian_lessons: List[dict] = []
+    try:
+        planned_signal = synthesis_output.get("verdict", {}).get("bias") if synthesis_output else None
+        mg_payload = {
+            "scope": "trading",
+            "context": {
+                "planned_signal": planned_signal or ("BULLISH" if float(getattr(e4, "y_hat", 0.0)) >= 0 else "BEARISH"),
+                "market_regime": regime.get("label"),
+                "probability_up": float(getattr(e4, "proba_up", 0.5)),
+            },
+            "top_k": 3,
+        }
+        mg_result = memory_guardian.query(mg_payload)
+        guardian_lessons = mg_result.output.get("lessons", []) if mg_result and isinstance(mg_result.output, dict) else []
+    except Exception:
+        guardian_lessons = []
     # Optional Event Study: if we have high-impact facts
     event_summary_lines: list[str] = []
     try:
@@ -2495,6 +2658,8 @@ def run_release_flow(
             neighbors=neighbors,
             memory=memory,
             trust=trust,
+            lessons=guardian_lessons,
+            source_trust=source_trust,
         )
     else:
         deb_text, risk_flags = debate(
@@ -2504,6 +2669,8 @@ def run_release_flow(
             neighbors=neighbors,
             memory=memory,
             trust=trust,
+            lessons=guardian_lessons,
+            source_trust=source_trust,
         )
     expl_text = explain_short(
         getattr(e4, "y_hat", 0.0),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Chart Vision Agent — мультитаймфреймовый визуальный анализ."""
 
+import json
+import os
 from dataclasses import dataclass
 from typing import List
 
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..infra import metrics
 from ..infra.run_lock import slot_lock
+from ..reasoning.llm import call_openai_json
 from .base import AgentResult, BaseAgent
 
 
@@ -36,6 +39,9 @@ class ChartVisionAgent(BaseAgent):
         params = ChartVisionPayload(**payload)
         with slot_lock(params.slot):
             insights = self._analyze(params)
+            llm_insights = self._query_llm(params)
+            if llm_insights:
+                insights = llm_insights
             merged = self._merge(insights)
             metrics.push_values(
                 job="chart_vision_agent",
@@ -75,6 +81,44 @@ class ChartVisionAgent(BaseAgent):
             "confidence": round(avg_conf, 3),
             "insights": [i.__dict__ for i in insights],
         }
+
+    def _query_llm(self, params: ChartVisionPayload) -> List[VisionInsight] | None:
+        flag = os.getenv("ENABLE_CHART_VISION_LLM", "0")
+        if flag not in {"1", "true", "True"}:
+            return None
+        try:
+            sys_prompt = (
+                "You are a multimodal technical analyst."
+                " Analyse the supplied chart image URLs on multiple timeframes"
+                " and return JSON with key 'insights': list of"
+                " {timeframe, bias (bullish/bearish/neutral), confidence (0..1), notes[]}"
+            )
+            usr_payload = {
+                "images": params.image_urls,
+                "regime": params.regime,
+            }
+            raw = call_openai_json(
+                sys_prompt,
+                json.dumps(usr_payload),
+                model=os.getenv("OPENAI_MODEL_VISION") or os.getenv("OPENAI_MODEL_MASTER"),
+            )
+            items = raw.get("insights") if isinstance(raw, dict) else None
+            result: List[VisionInsight] = []
+            for item in items or []:
+                try:
+                    result.append(
+                        VisionInsight(
+                            timeframe=str(item.get("timeframe") or "hybrid"),
+                            bias=str(item.get("bias") or "neutral").lower(),
+                            confidence=float(item.get("confidence") or 0.5),
+                            notes=[str(n) for n in (item.get("notes") or [])],
+                        )
+                    )
+                except Exception:
+                    continue
+            return result or None
+        except Exception:
+            return None
 
     def _infer_timeframe(self, url: str, idx: int) -> str:
         for tf in ("1m", "5m", "15m", "1h", "4h", "1d", "1w"):

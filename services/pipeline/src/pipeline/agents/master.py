@@ -19,6 +19,7 @@ from ..infra.db import (
     upsert_trade_suggestion,
     insert_run_summary,
     fetch_latest_strategic_verdict,
+    get_data_source_trust,
 )
 from ..infra.s3 import download_bytes
 from ..mcp.client import call_tool
@@ -89,6 +90,19 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     )
     news_signals = [s.model_dump() for s in getattr(news, "news_signals", [])] if news else []
     news_facts = [f for f in (getattr(news, "news_facts", []) or [])]
+    source_trust: Dict[str, float] = {}
+    for sig in news_signals:
+        try:
+            src_name = str(sig.get("source") or sig.get("provider") or "").strip()
+        except Exception:
+            src_name = ""
+        if not src_name or src_name in source_trust:
+            continue
+        trust_val = get_data_source_trust(src_name)
+        if trust_val is None and sig.get("provider") and src_name.lower() != str(sig["provider"]).lower():
+            trust_val = get_data_source_trust(str(sig.get("provider")))
+        if trust_val is not None:
+            source_trust[src_name] = float(trust_val)
 
     # 2) Features
     feats = run_features(
@@ -193,6 +207,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         trust=(e4.get("weights") or {}),
         ta=ta,
         lessons=guardian_lessons,
+        source_trust=source_trust,
     )
     expl_text = explain_short(
         float(e4.get("y_hat", 0.0) or 0.0), float(e4.get("proba_up", 0.5) or 0.5), news_top, e4.get("rationale_points") or []

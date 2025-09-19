@@ -208,6 +208,8 @@ STRATEGIC_DATA_KEYWORDS — список ключевых слов (через 
 PROJECT_TASKS_WEBHOOK — необязательный вебхук для отправки задач, созданных StrategicDataAgent, во внешнюю систему управления проектами (Jira/Linear/Notion). Если не задан, задачи логируются только в базе.
 
 MODEL_ARTIFACT_ROOT — каталог, из которого подгружаются артефакты моделей (например, ONNX для динамических индикаторов). По умолчанию `artifacts` в корне проекта.
+RED_TEAM_STRATEGY — стратегия, применяемая Красной Командой при бэктесте синтетических сценариев (формат `module:ClassName`, по умолчанию `pipeline.trading.backtest.strategies:MovingAverageCrossStrategy`).
+RED_TEAM_BASE_PRICE — базовая цена (USD) для генерации синтетических рядов при стресс‑тестах (по умолчанию 30000).
 
 SENTRY_DSN — ключ для Sentry. При задании трейсбек ошибок отправляются в Sentry.
 
@@ -316,7 +318,9 @@ MCP_HOST, MCP_PORT, MCP_URL — адрес и порт MCP.
 
 - OPENAI_MODEL — дефолтная модель (рекомендуется `gpt-4o-mini` для быстрой обработки).
 - OPENAI_MODEL_MASTER — модель для MasterAgent/арбитра (рекомендуется `gpt-4o` для сложных рассуждений).
+- OPENAI_MODEL_VISION — мультимодальная модель для `chart_vision_agent`.
 - OPENAI_MODEL_NEWS_FACTS — модель для news_facts (по умолчанию `gpt-4o-mini`).
+- ENABLE_CHART_VISION_LLM — 1/0, включает вызов мультимодальной модели; при 0 агент использует эвристику.
 - LLM_MAX_TOKENS — лимит на ответ (4096 по умолчанию — «пространство для мысли»).
 
 Order Flow (тик‑стрим)
