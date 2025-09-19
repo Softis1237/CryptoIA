@@ -6,14 +6,15 @@ from typing import Any, Dict, Optional
 
 import ccxt
 from loguru import logger
+from ..infra.secrets import get_secret
 
 
 def _build_exchange() -> ccxt.Exchange:
     name = os.getenv("EXCHANGE", os.getenv("CCXT_EXCHANGE", os.getenv("CCXT_PROVIDER", "binance")))
     ex_cls = getattr(ccxt, name)
-    api_key = os.getenv("EXCHANGE_API_KEY")
-    secret = os.getenv("EXCHANGE_SECRET")
-    password = os.getenv("EXCHANGE_PASSWORD")
+    api_key = get_secret("EXCHANGE_API_KEY", os.getenv("EXCHANGE_API_KEY"))
+    secret = get_secret("EXCHANGE_SECRET", os.getenv("EXCHANGE_SECRET"))
+    password = get_secret("EXCHANGE_PASSWORD", os.getenv("EXCHANGE_PASSWORD"))
     default_type = os.getenv("EXCHANGE_TYPE", "spot")  # spot|future|swap
     timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "20000"))
     params: Dict[str, Any] = {"enableRateLimit": True, "timeout": timeout_ms, "options": {"defaultType": default_type}}

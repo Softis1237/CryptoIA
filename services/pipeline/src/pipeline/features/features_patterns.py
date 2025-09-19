@@ -111,6 +111,45 @@ def detect_patterns(df: pd.DataFrame, patterns: List[dict] | None = None) -> Dic
         "pat_three_white_soldiers": tws,
     }
 
+    # Optional TA‑Lib patterns (if talib is installed)
+    _zero = pd.Series(0, index=df.index)
+    talib_columns = {
+        "pat_doji_ta": _zero.copy(),
+        "pat_hanging_man_ta": _zero.copy(),
+        "pat_shooting_star_ta": _zero.copy(),
+        "pat_hammer_ta": _zero.copy(),
+        "pat_inverted_hammer_ta": _zero.copy(),
+        "pat_morning_star_ta": _zero.copy(),
+        "pat_evening_star_ta": _zero.copy(),
+    }
+    out.update(talib_columns)
+
+    try:
+        import numpy as _np  # noqa: N813
+        import talib  # type: ignore
+
+        open_v = _np.asarray(o, dtype=float)
+        high_v = _np.asarray(h, dtype=float)
+        low_v = _np.asarray(l, dtype=float)
+        close_v = _np.asarray(c, dtype=float)
+
+        def _bin(arr) -> pd.Series:
+            try:
+                return pd.Series((arr.astype(float) != 0).astype(int), index=df.index)
+            except Exception:
+                return _zero.copy()
+
+        out["pat_doji_ta"] = _bin(talib.CDLDOJI(open_v, high_v, low_v, close_v))
+        out["pat_hanging_man_ta"] = _bin(talib.CDLHANGINGMAN(open_v, high_v, low_v, close_v))
+        out["pat_shooting_star_ta"] = _bin(talib.CDLSHOOTINGSTAR(open_v, high_v, low_v, close_v))
+        out["pat_hammer_ta"] = _bin(talib.CDLHAMMER(open_v, high_v, low_v, close_v))
+        out["pat_inverted_hammer_ta"] = _bin(talib.CDLINVERTEDHAMMER(open_v, high_v, low_v, close_v))
+        out["pat_morning_star_ta"] = _bin(talib.CDLMORNINGSTAR(open_v, high_v, low_v, close_v, penetration=0.3))
+        out["pat_evening_star_ta"] = _bin(talib.CDLEVENINGSTAR(open_v, high_v, low_v, close_v, penetration=0.3))
+    except Exception:
+        # TA-Lib is optional in some deployments; keep zero-filled columns for consistency.
+        pass
+
     # Chart patterns (evaluate over recent window; set flag at last index)
     try:
         win = int((patterns[0].get("definition", {}) or {}).get("lookback", 240)) if patterns else 240

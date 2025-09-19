@@ -280,12 +280,26 @@ def predict_release(
     except Exception:
         lessons = []
 
+    # Optional RAG knowledge points
+    rag_points = []
+    try:
+        import os
+        if os.getenv("ENABLE_RAG", "0") in {"1", "true", "True"}:
+            from ..knowledge.loader import search as _rag_search
+
+            q = f"Regime:{regime.label}; News:{'; '.join(news_points[:3])}; Patterns:{'; '.join(e4.rationale_points[:3])}"
+            hits = _rag_search(q, k=5)
+            rag_points = [h.get("title") or (h.get("content") or "")[:80] for h in hits]
+    except Exception:
+        rag_points = []
+
     deb_text, risk_flags = debate(
         rationale_points=e4.rationale_points,
         regime=regime.label,
         news_top=news_points,
         neighbors=neighbors,
         lessons=lessons,
+        knowledge=rag_points,
     )
     expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
 

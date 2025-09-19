@@ -84,9 +84,22 @@ def open_from_last_suggestion(
         def _open_retry():
             return _do_open()
 
-        res = _open_retry()
-    except Exception:
-        res = _do_open()
+        try:
+            res = _open_retry()
+        except Exception as e:
+            # alert admin with error class
+            try:
+                from ..telegram_bot.publisher import publish_message
+
+                admin = os.getenv("TELEGRAM_ADMIN_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID")
+                if admin:
+                    publish_message(
+                        f"Live execution error: {e.__class__.__name__}: {e}",
+                    )
+            except Exception:
+                pass
+            # last attempt without retry wrapper
+            res = _do_open()
     logger.info(
         f"Live executed run_id={run_id}: entry={res.entry_id} sl={res.sl_id} tp={res.tp_id}"
     )

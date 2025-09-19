@@ -33,8 +33,17 @@ def _weights() -> Dict[str, float]:
         "PATTERN_BEAR_ENGULF": 1.2,
         "PATTERN_HAMMER": 1.0,
         "PATTERN_SHOOTING_STAR": 1.0,
+        "PATTERN_DOJI": 0.8,
+        "PATTERN_HANGING_MAN": 1.0,
+        "PATTERN_INVERTED_HAMMER": 1.0,
+        "PATTERN_MORNING_STAR": 1.2,
+        "PATTERN_EVENING_STAR": 1.2,
         "DERIV_OI_JUMP": 1.2,
         "DERIV_FUNDING": 1.1,
+        "BREAKOUT_UP": 1.4,
+        "BREAKOUT_DOWN": 1.4,
+        "BREAKOUT_SMC_UP": 1.5,
+        "BREAKOUT_SMC_DOWN": 1.5,
     }
     try:
         override = params.get("weights") or {}
@@ -101,6 +110,8 @@ def mark_and_score(current_type: str, window_sec: int = 180) -> AlertPriority:
             ["MOMENTUM", "VOL_SPIKE"],
             ["MOMENTUM", "PATTERN_BULL_ENGULF"],
             ["MOMENTUM", "PATTERN_BEAR_ENGULF"],
+            ["MOMENTUM", "BREAKOUT_UP"],
+            ["MOMENTUM", "BREAKOUT_DOWN"],
         ]
         present = {k for k in evidence.keys() if (evidence.get(k, 0.0) > 0)}
         ok = False

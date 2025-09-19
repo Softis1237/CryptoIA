@@ -11,6 +11,7 @@ Env:
 import hashlib
 import os
 from typing import List
+from ..infra.secrets import get_secret
 
 
 def _hash_to_vec(text: str, dim: int = 1536) -> List[float]:
@@ -25,7 +26,7 @@ def _hash_to_vec(text: str, dim: int = 1536) -> List[float]:
 
 def embed_text(text: str, model: str | None = None) -> List[float]:
     model = model or os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = get_secret("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
     if not api_key:
         return _hash_to_vec(text)
     try:
@@ -38,4 +39,3 @@ def embed_text(text: str, model: str | None = None) -> List[float]:
         return [float(x) for x in vec]
     except Exception:
         return _hash_to_vec(text)
-

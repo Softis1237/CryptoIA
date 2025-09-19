@@ -254,10 +254,17 @@ Lessons (петля обратной связи)
 - OPENAI_EMBED_MODEL — модель эмбеддингов (по умолчанию `text-embedding-3-small`).
 - Для сохранения векторных представлений уроков требуется миграция `040_agent_lessons_vector.sql` и расширение `vector` в PostgreSQL.
 
+RAG (Knowledge Core)
+--------------------
+
+- ENABLE_RAG — включить поиск знаний (RAG) и подмешивание фактов в дебаты (1/0).
+- Загрузка материалов: `pipeline.knowledge.loader.load_and_embed` — путь к txt/md.
+
 Vault (секреты)
 ---------------
 
 - VAULT_URL, VAULT_TOKEN, VAULT_PATH_PREFIX — включают чтение секретов через `infra/secrets.get_secret`.
+- Используется для: OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, EXCHANGE_API_KEY/SECRET/PASSWORD.
 
 Портфель и политики
 -------------------

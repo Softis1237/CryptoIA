@@ -190,7 +190,14 @@ def plot_price_with_smc_zones(
         hi = float(z.get("price_high") or lo)
         if hi <= 0 and lo <= 0:
             continue
-        c = colors.get(zt, (0.4, 0.4, 0.4, 0.12))
+        base = colors.get(zt, (0.4, 0.4, 0.4, 0.12))
+        status = str(z.get("status") or "").lower()
+        alpha = 0.15
+        if status == "mitigated":
+            alpha = 0.08
+        elif status == "invalidated":
+            alpha = 0.04
+        c = (base[0], base[1], base[2], alpha)
         t0 = df["dt"].iloc[max(0, len(df) - 200)]  # последний участок
         t1 = df["dt"].iloc[-1]
         ax.fill_between([t0, t1], [lo, lo], [hi, hi], color=c, step="pre", linewidth=0.0)

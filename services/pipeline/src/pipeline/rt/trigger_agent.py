@@ -151,6 +151,13 @@ NEWS_POLL_WINDOW_H = _param_int("news_poll_window_h", "TRIGGER_NEWS_WINDOW_H", 1
 ATR_FACTOR = _param_float("atr_factor", "TRIGGER_ATR_FACTOR", 3.0)
 MOMENTUM_5M_PCT = _param_float("momentum_5m_pct", "TRIGGER_MOMENTUM_5M_PCT", 0.005)
 PATTERNS_ENABLE = _param_bool("patterns_enable", "TRIGGER_PATTERNS_ENABLE", True)
+BREAKOUT_ENABLE = _param_bool("breakout_enable", "TRIGGER_BREAKOUT_ENABLE", True)
+BREAKOUT_TF = _param_str("breakout_tf", "TRIGGER_BREAKOUT_TF", "5m")
+BREAKOUT_LOOKBACK = _param_int("breakout_lookback", "TRIGGER_BREAKOUT_LOOKBACK", 48)
+BREAKOUT_TOL_BPS = _param_float("breakout_tol_bps", "TRIGGER_BREAKOUT_TOL_BPS", 10.0)
+SMC_BREAKOUT_ENABLE = _param_bool("smc_breakout_enable", "TRIGGER_SMC_BREAKOUT_ENABLE", True)
+SMC_BREAKOUT_TF = _param_str("smc_breakout_tf", "TRIGGER_SMC_BREAKOUT_TF", "15m")
+SMC_BREAKOUT_TOL_BPS = _param_float("smc_breakout_tol_bps", "TRIGGER_SMC_BREAKOUT_TOL_BPS", 8.0)
 
 # Derivatives anomalies
 DERIV_ENABLE = _param_bool("deriv_enable", "TRIGGER_DERIV_ENABLE", True)
@@ -453,6 +460,11 @@ def _maybe_trigger_patterns() -> None:
             ("pat_engulfing_bear", "PATTERN_BEAR_ENGULF"),
             ("pat_hammer", "PATTERN_HAMMER"),
             ("pat_shooting_star", "PATTERN_SHOOTING_STAR"),
+            ("pat_doji_ta", "PATTERN_DOJI"),
+            ("pat_hanging_man_ta", "PATTERN_HANGING_MAN"),
+            ("pat_inverted_hammer_ta", "PATTERN_INVERTED_HAMMER"),
+            ("pat_morning_star_ta", "PATTERN_MORNING_STAR"),
+            ("pat_evening_star_ta", "PATTERN_EVENING_STAR"),
         ]
         for col, kind in to_check:
             s = pats.get(col)
@@ -461,6 +473,59 @@ def _maybe_trigger_patterns() -> None:
                 break  # one pattern at a time
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Patterns trigger failed: {e}")
+
+
+def _maybe_trigger_breakout() -> None:
+    if not BREAKOUT_ENABLE:
+        return
+    try:
+        raw = _fetch_ohlcv(SYMBOL, timeframe=BREAKOUT_TF, limit=max(60, BREAKOUT_LOOKBACK + 5))
+        if not raw:
+            return
+        import pandas as pd
+
+        df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"]).astype(float)
+        if len(df) <= BREAKOUT_LOOKBACK + 1:
+            return
+        recent = df.iloc[-(BREAKOUT_LOOKBACK + 1) : -1]
+        last = df.iloc[-1]
+        prev_hi = float(recent["high"].max())
+        prev_lo = float(recent["low"].min())
+        close = float(last["close"])
+        tol = float(BREAKOUT_TOL_BPS) / 1e4
+        if close >= prev_hi * (1.0 + tol) and _cooldown_ok("BREAKOUT_UP"):
+            _publish("BREAKOUT_UP", {"tf": BREAKOUT_TF, "close": close, "prev_hi": prev_hi, "tol_bps": BREAKOUT_TOL_BPS})
+        elif close <= prev_lo * (1.0 - tol) and _cooldown_ok("BREAKOUT_DOWN"):
+            _publish("BREAKOUT_DOWN", {"tf": BREAKOUT_TF, "close": close, "prev_lo": prev_lo, "tol_bps": BREAKOUT_TOL_BPS})
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Breakout trigger failed: {e}")
+
+
+def _maybe_trigger_smc_breakout() -> None:
+    if not SMC_BREAKOUT_ENABLE:
+        return
+    try:
+        from ..infra.db import fetch_smc_zones
+        zones = fetch_smc_zones(SYMBOL, timeframe=SMC_BREAKOUT_TF, status="untested", limit=20)
+        if not zones:
+            return
+        ohlcv = _fetch_ohlcv(SYMBOL, timeframe="1m", limit=2)
+        if not ohlcv:
+            return
+        close = float(ohlcv[-1][4])
+        tol = float(SMC_BREAKOUT_TOL_BPS) / 1e4
+        for z in zones:
+            lo = float(z.get("price_low") or 0.0)
+            hi = float(z.get("price_high") or lo)
+            zt = str(z.get("zone_type") or "")
+            if hi > 0 and close >= hi * (1.0 + tol) and _cooldown_ok("BREAKOUT_SMC_UP"):
+                _publish("BREAKOUT_SMC_UP", {"tf": SMC_BREAKOUT_TF, "close": close, "hi": hi, "zone_type": zt})
+                break
+            if lo > 0 and close <= lo * (1.0 - tol) and _cooldown_ok("BREAKOUT_SMC_DOWN"):
+                _publish("BREAKOUT_SMC_DOWN", {"tf": SMC_BREAKOUT_TF, "close": close, "lo": lo, "zone_type": zt})
+                break
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"SMC breakout trigger failed: {e}")
 
 
 def _maybe_trigger_derivatives() -> None:
@@ -570,6 +635,8 @@ def main() -> None:
             _maybe_trigger_volatility()
             _maybe_trigger_momentum()
             _maybe_trigger_patterns()
+            _maybe_trigger_breakout()
+            _maybe_trigger_smc_breakout()
             # Derivatives anomalies
             _maybe_trigger_derivatives()
             # News triggers best-effort

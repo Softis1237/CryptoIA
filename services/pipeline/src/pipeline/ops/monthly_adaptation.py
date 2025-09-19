@@ -123,8 +123,55 @@ def run(inp: MonthlyInput) -> Dict[str, Any]:
                 "thresholds": {"low": 0.0, "medium": 1.0, "high": 2.2, "critical": 3.2},
                 "critical_combos": [["L2_IMBALANCE", "VOL_SPIKE"], ["PATTERN_BULL_ENGULF", "VOL_SPIKE"], ["PATTERN_BEAR_ENGULF", "VOL_SPIKE"]],
             }
+        # Fine‑tune critical threshold by recent performance snapshot
+        try:
+            avg_wr = sum(rstats.values()) / max(1, len(rstats))
+            if ap_params and avg_wr:
+                thr = ap_params.get("thresholds", {})
+                # если winrate высокий — снизим critical порог на 5%, иначе поднимем на 5%
+                crit = float(thr.get("critical", 3.0))
+                thr["critical"] = round(crit * (0.95 if avg_wr >= 0.55 else 1.05), 3)
+                ap_params["thresholds"] = thr
+        except Exception:
+            pass
         if ap_params:
             insert_agent_config("AlertPriority", None, ap_params, make_active=True)
+    except Exception:
+        pass
+
+    # Agent‑aware adaptation (SMC/Whale) — эвристика по PnL‑вкладу
+    try:
+        sql = (
+            """
+            SELECT t.reason_codes, pnl.realized_pnl
+            FROM paper_pnl pnl
+            JOIN paper_positions p USING (pos_id)
+            JOIN trades_suggestions t ON (t.run_id = p.meta_json->>'run_id')
+            WHERE p.opened_at >= now() - interval '%s days'
+            """
+        )
+        acc: Dict[str, float] = {}
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (int(days),))
+                for rc_list, pnl in cur.fetchall() or []:
+                    try:
+                        for code in (rc_list or []):
+                            s = str(code)
+                            if s.startswith("AGENT:"):
+                                k = s.replace("AGENT:", "")
+                                acc[k] = acc.get(k, 0.0) + float(pnl or 0.0)
+                    except Exception:
+                        continue
+        if acc:
+            # Raise weight for positive agents
+            params: Dict[str, float] = {}
+            if acc.get("SMC") and acc["SMC"] > 0:
+                params["w_smc"] = 0.13
+            if acc.get("WHALE") and acc["WHALE"] > 0:
+                params["w_whale"] = 0.11
+            if params:
+                insert_agent_config("ConfidenceAggregator", None, params, make_active=True)
     except Exception:
         pass
 

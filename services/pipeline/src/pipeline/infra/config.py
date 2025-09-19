@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from .secrets import get_secret
 
 
 @dataclass
@@ -23,7 +24,7 @@ class Settings:
 
     timezone: str = os.getenv("TIMEZONE", "Asia/Jerusalem")
 
-    telegram_bot_token: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_bot_token: str | None = get_secret("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str | None = os.getenv("TELEGRAM_CHAT_ID")
 
 
