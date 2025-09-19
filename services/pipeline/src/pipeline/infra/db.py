@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import psycopg2
 from loguru import logger
@@ -33,6 +33,106 @@ def get_conn():
 
 
 # ============ Affiliates / Referrals ============
+
+# --- Strategic data sources -------------------------------------------------
+
+
+def upsert_data_source(
+    name: str,
+    url: str,
+    provider: str,
+    tags: Iterable[str],
+    popularity: float,
+    reputation: float,
+    trust_score: float,
+    metadata: Dict[str, float] | None = None,
+) -> None:
+    sql = (
+        "INSERT INTO data_sources (name, url, provider, tags, popularity, reputation, trust_score, metadata) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (name) DO UPDATE SET url=EXCLUDED.url, provider=EXCLUDED.provider, tags=EXCLUDED.tags, "
+        "popularity=EXCLUDED.popularity, reputation=EXCLUDED.reputation, trust_score=EXCLUDED.trust_score, "
+        "metadata=EXCLUDED.metadata, updated_at=now()"
+    )
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    name,
+                    url,
+                    provider,
+                    _Json(list(tags)),
+                    float(popularity),
+                    float(reputation),
+                    float(trust_score),
+                    _Json(metadata or {}),
+                ),
+            )
+
+
+def insert_data_source_history(
+    source_name: str,
+    delta: float,
+    new_score: float,
+    reason: str,
+    meta: Dict[str, float] | None = None,
+) -> None:
+    sql = (
+        "INSERT INTO data_source_history (source_name, delta, new_score, reason, meta) "
+        "VALUES (%s, %s, %s, %s, %s)"
+    )
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (source_name, float(delta), float(new_score), reason, _Json(meta or {})))
+
+
+def insert_data_source_anomaly(source_name: str, run_id: str, meta: Dict[str, float] | None = None) -> None:
+    sql = "INSERT INTO data_source_anomalies (source_name, run_id, meta) VALUES (%s, %s, %s)"
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (source_name, run_id, _Json(meta or {})))
+
+
+def fetch_data_sources(limit: int = 100) -> list[dict]:
+    sql = "SELECT name, url, provider, tags, trust_score, metadata FROM data_sources ORDER BY updated_at DESC LIMIT %s"
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(limit),))
+            for name, url, provider, tags, trust_score, metadata in cur.fetchall() or []:
+                out.append(
+                    {
+                        "name": str(name),
+                        "url": str(url or ""),
+                        "provider": str(provider or ""),
+                        "tags": list(tags or []),
+                        "trust_score": float(trust_score or 0.0),
+                        "metadata": metadata or {},
+                    }
+                )
+    return out
+
+
+def insert_data_source_task(summary: str, description: str, priority: str, tags: Iterable[str]) -> int:
+    sql = (
+        "INSERT INTO data_source_tasks (summary, description, priority, tags) "
+        "VALUES (%s, %s, %s, %s) RETURNING id"
+    )
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (summary, description, priority, _Json(list(tags))))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
 
 def ensure_affiliates_tables() -> None:
     sql_aff = (
@@ -1532,6 +1632,105 @@ def fetch_agent_lessons_similar(embedding: list[float], k: int = 5, scope: str |
                         "scope": str(scope or "global"),
                         "lesson_text": str(txt or ""),
                         "meta": meta or {},
+                    }
+                )
+    return out
+
+
+# --- Structured lessons -----------------------------------------------------
+
+
+def insert_structured_lesson(
+    scope: str,
+    hash_val: str,
+    lesson: dict,
+    error_type: str,
+    market_regime: str,
+    involved_agents: Iterable[str],
+    triggering_signals: Iterable[str],
+    key_factors_missed: Iterable[str],
+    correct_action_suggestion: str,
+    confidence_before: float,
+    outcome_after: float,
+) -> None:
+    sql = (
+        "INSERT INTO agent_lessons_structured (scope, hash, lesson, error_type, market_regime, involved_agents, "
+        "triggering_signals, key_factors_missed, correct_action_suggestion, confidence_before, outcome_after, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
+        "ON CONFLICT (hash) DO UPDATE SET lesson=EXCLUDED.lesson, error_type=EXCLUDED.error_type, "
+        "market_regime=EXCLUDED.market_regime, involved_agents=EXCLUDED.involved_agents, "
+        "triggering_signals=EXCLUDED.triggering_signals, key_factors_missed=EXCLUDED.key_factors_missed, "
+        "correct_action_suggestion=EXCLUDED.correct_action_suggestion, confidence_before=EXCLUDED.confidence_before, "
+        "outcome_after=EXCLUDED.outcome_after, updated_at=now()"
+    )
+    from psycopg2.extras import Json as _Json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    scope,
+                    hash_val,
+                    _Json(lesson),
+                    error_type,
+                    market_regime,
+                    list(involved_agents),
+                    list(triggering_signals),
+                    list(key_factors_missed),
+                    correct_action_suggestion,
+                    float(confidence_before),
+                    float(outcome_after),
+                ),
+            )
+
+
+def upsert_structured_lesson_vector(hash_val: str, embedding: Iterable[float]) -> None:
+    ensure_vector()
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    sql = "UPDATE agent_lessons_structured SET lesson_embedding=%s::vector WHERE hash=%s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (vec, hash_val))
+
+
+def search_structured_lessons(embedding: Iterable[float], scope: str, top_k: int = 5) -> list[dict]:
+    ensure_vector()
+    vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    sql = (
+        "SELECT lesson, confidence_before, outcome_after, hash FROM agent_lessons_structured "
+        "WHERE lesson_embedding IS NOT NULL AND scope=%s ORDER BY lesson_embedding <-> %s::vector LIMIT %s"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (scope, vec, int(top_k)))
+            rows = cur.fetchall() or []
+            for lesson, confidence_before, outcome_after, hash_val in rows:
+                out.append(
+                    {
+                        "lesson": lesson,
+                        "confidence_before": float(confidence_before or 0.0),
+                        "outcome_after": float(outcome_after or 0.0),
+                        "hash": hash_val,
+                    }
+                )
+    return out
+
+
+def fetch_recent_structured_lessons(scope: str, limit: int = 10) -> list[dict]:
+    sql = (
+        "SELECT lesson, created_at FROM agent_lessons_structured WHERE scope=%s ORDER BY created_at DESC LIMIT %s"
+    )
+    out: list[dict] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (scope, int(limit)))
+            for lesson, created_at in cur.fetchall() or []:
+                out.append(
+                    {
+                        "lesson": lesson,
+                        "created_at": created_at.isoformat() if created_at else "",
                     }
                 )
     return out

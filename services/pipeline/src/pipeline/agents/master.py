@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from loguru import logger
 
@@ -18,7 +18,9 @@ from ..infra.db import (
     upsert_explanations,
     upsert_trade_suggestion,
     insert_run_summary,
+    fetch_latest_strategic_verdict,
 )
+from ..infra.s3 import download_bytes
 from ..mcp.client import call_tool
 from ..reporting.charts import plot_price_with_levels
 from ..reasoning.debate_arbiter import multi_debate
@@ -33,6 +35,9 @@ from ..data.ingest_news import IngestNewsInput, run as run_news
 from ..features.features_calc import FeaturesCalcInput, run as run_features
 from ..reasoning.chart_reasoning import ChartReasoningInput as _CRInput
 from ..reasoning.chart_reasoning import run as run_chart_reasoning
+from .chart_vision_agent import ChartVisionAgent
+from .technical_synthesis_agent import TechnicalSynthesisAgent
+from .memory_guardian_agent import MemoryGuardianAgent
 
 
 @dataclass
@@ -56,6 +61,9 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     ctx = MasterContext(run_id=run_id, slot=slot)
+    vision_agent = ChartVisionAgent()
+    synthesis_agent = TechnicalSynthesisAgent()
+    memory_guardian = MemoryGuardianAgent()
 
     # 1) Ingest prices + news
     end_ts = int(now.timestamp())
@@ -96,6 +104,8 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     upsert_features_snapshot(
         run_id, getattr(feats, "snapshot_ts", now.isoformat()), features_s3
     )
+    indicators_snapshot = _latest_indicator_snapshot(features_s3)
+    smc_snapshot = fetch_latest_strategic_verdict("SMC Analyst", "BTC/USDT") or {}
 
     # 3) MCP tools
     regime = call_tool("run_regime_detection", {"features_s3": features_s3}) or {}
@@ -121,6 +131,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         upsert_ensemble_weights(run_id, e4.get("weights") or {})
     except Exception:
         pass
+
     e12 = (out12.get("ensemble") or {})
     preds12 = out12.get("preds") or []
     upsert_prediction(
@@ -156,6 +167,24 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             mem.append(f"lesson: {ls.get('lesson_text')}")
     except Exception:
         pass
+    planned_signal = "BULLISH" if float(e4.get("y_hat", 0.0) or 0.0) >= 0 else "BEARISH"
+    guardian_lessons: List[dict] = []
+    try:
+        mg_result = memory_guardian.query(
+            {
+                "scope": "trading",
+                "context": {
+                    "planned_signal": planned_signal,
+                    "market_regime": str(regime.get("label", "range")),
+                    "probability_up": float(e4.get("proba_up", 0.5) or 0.5),
+                },
+                "top_k": 3,
+            }
+        )
+        if mg_result and isinstance(mg_result.output, dict):
+            guardian_lessons = mg_result.output.get("lessons", []) or []
+    except Exception:
+        guardian_lessons = []
     deb_text, risk_flags = multi_debate(
         regime=str(regime.get("label")),
         news_top=news_top,
@@ -163,12 +192,15 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         memory=mem,
         trust=(e4.get("weights") or {}),
         ta=ta,
+        lessons=guardian_lessons,
     )
     expl_text = explain_short(
         float(e4.get("y_hat", 0.0) or 0.0), float(e4.get("proba_up", 0.5) or 0.5), news_top, e4.get("rationale_points") or []
     )
 
     chart_s3 = None
+    vision_output = {"bias": "neutral", "confidence": 0.5, "insights": []}
+    synthesis_output = {"verdict": {"bias": "NEUTRAL", "confidence": 0.0, "score": 0.0}, "components": []}
     try:
         chart_s3 = plot_price_with_levels(
             features_path_s3=features_s3,
@@ -180,6 +212,34 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         )
     except Exception:
         pass
+
+    if chart_s3:
+        try:
+            vision_result = vision_agent.run(
+                {
+                    "run_id": run_id,
+                    "symbol": "BTCUSDT",
+                    "image_urls": [chart_s3],
+                    "regime": str(regime.get("label", "range")),
+                }
+            )
+            vision_output = vision_result.output
+        except Exception:
+            vision_output = {"bias": "neutral", "confidence": 0.4, "insights": []}
+
+    try:
+        synthesis_output = synthesis_agent.run(
+            {
+                "run_id": run_id,
+                "symbol": "BTCUSDT",
+                "indicators": indicators_snapshot,
+                "smc": smc_snapshot,
+                "vision": vision_output,
+                "features_meta": {"features_s3": features_s3},
+            }
+        ).output
+    except Exception:
+        synthesis_output = {"verdict": {"bias": "NEUTRAL", "confidence": 0.0, "score": 0.0}, "components": []}
 
     # 6) Trade card
     last_price = float(out4.get("last_price", 0.0) or 0.0)
@@ -216,6 +276,9 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         + expl_text
         + "\n\n<b>Арбитраж</b>\n"
         + deb_text
+        + "\n\n<b>Technical synthesis</b>\n"
+        + f"Bias: {synthesis_output.get('verdict', {}).get('bias', 'NEUTRAL')} "
+        + f"({synthesis_output.get('verdict', {}).get('confidence', 0.0):.2f})"
         + (f"\nChart: {chart_s3}" if chart_s3 else "")
     )
     upsert_explanations(run_id, md, risk_flags)
@@ -242,6 +305,10 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             ],
         },
         "risk_flags": risk_flags,
+        "vision": vision_output,
+        "synthesis": synthesis_output,
+        "smc": smc_snapshot,
+        "indicators": indicators_snapshot,
     }
     insert_run_summary(run_id, final_summary, None)
 
@@ -268,6 +335,50 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         "trade": {"card": card, "verified": ok, "reason": reason},
         "explain": md,
     }
+
+
+def _latest_indicator_snapshot(features_s3: str) -> Dict[str, float]:
+    if not features_s3:
+        return {}
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        raw = download_bytes(features_s3)
+        cols = [
+            "ts",
+            "close",
+            "ema_20",
+            "ema_50",
+            "rsi_dynamic",
+            "atr_dynamic",
+            "bb_width_dynamic",
+            "indicator_cfg_rsi",
+            "indicator_cfg_atr",
+            "indicator_cfg_bb_window",
+            "indicator_cfg_bb_std",
+        ]
+        table = pq.read_table(pa.BufferReader(raw), columns=cols)
+        df = table.to_pandas().sort_values("ts").reset_index(drop=True)
+        if df.empty:
+            return {}
+        row = df.iloc[-1]
+        close = float(row.get("close", 0.0) or 0.0)
+        ema_fast = float(row.get("ema_20", 0.0) or 0.0)
+        ema_slow = float(row.get("ema_50", 0.0) or 0.0)
+        trend_strength = (ema_fast - ema_slow) / (abs(close) + 1e-9)
+        return {
+            "rsi_dynamic": float(row.get("rsi_dynamic", 50.0) or 50.0),
+            "atr_dynamic": float(row.get("atr_dynamic", 0.0) or 0.0),
+            "bb_width_dynamic": float(row.get("bb_width_dynamic", 0.0) or 0.0),
+            "trend_strength": float(trend_strength),
+            "cfg_rsi": int(row.get("indicator_cfg_rsi", 14) or 14),
+            "cfg_atr": int(row.get("indicator_cfg_atr", 14) or 14),
+            "cfg_bb_window": int(row.get("indicator_cfg_bb_window", 20) or 20),
+            "cfg_bb_std": float(row.get("indicator_cfg_bb_std", 2.0) or 2.0),
+        }
+    except Exception:
+        return {}
 
 
 def main():

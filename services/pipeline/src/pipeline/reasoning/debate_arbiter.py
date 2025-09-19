@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import os
 
 from .llm import call_flowise_json, call_openai_json
@@ -86,6 +86,7 @@ def multi_debate(
     model_bear: Optional[str] = None,
     model_quant: Optional[str] = None,
     ta: Optional[dict] = None,
+    lessons: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, List[str]]:
     """Run a lightweight multi-persona debate and aggregate with the arbiter.
 
@@ -120,5 +121,5 @@ def multi_debate(
             "Модели не предоставили разногласий — используем базовые доводы по сигналам.",
         ]
     # Feed into arbiter
-    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust, ta)
+    text, flags = debate(bullets_all, regime, news_top, neighbors, memory, trust, ta, lessons)
     return text, flags

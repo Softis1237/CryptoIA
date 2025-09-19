@@ -19,6 +19,7 @@ from ..ops.retrain import maybe_run as maybe_retrain
 from ..ops.rt_paper_adapt import run as paper_adapt
 from .agent_flow import run_release_flow
 from ..agents.master import run_master_flow
+from .master_orchestrator_agent import MasterOrchestratorAgent
 from ..mcp.server import serve_in_thread as _mcp_serve_in_thread
 
 
@@ -64,10 +65,19 @@ def main():
     )
     while True:
         try:
-            if os.getenv("USE_MASTER_AGENT", "0") in {"1", "true", "True"}:
-                run_master_flow(slot=slot)
-            else:
-                run_release_flow(slot=slot)
+            orchestrator_used = False
+            if os.getenv("USE_MASTER_ORCHESTRATOR", "1") in {"1", "true", "True"}:
+                try:
+                    keywords = [k.strip() for k in os.getenv("STRATEGIC_DATA_KEYWORDS", "bitcoin,liquidity").split(",") if k.strip()]
+                    MasterOrchestratorAgent().run({"slot": slot, "keywords": keywords})
+                    orchestrator_used = True
+                except Exception as exc:
+                    logger.exception("scheduled_runner: orchestrator failed: %s", exc)
+            if not orchestrator_used:
+                if os.getenv("USE_MASTER_AGENT", "0") in {"1", "true", "True"}:
+                    run_master_flow(slot=slot)
+                else:
+                    run_release_flow(slot=slot)
             # Push recent CV metrics snapshot for alerts/observability
             try:
                 push_cv_metrics()

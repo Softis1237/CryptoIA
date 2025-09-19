@@ -18,9 +18,11 @@ from ..features.features_smc import (
     save_zones_to_db,
 )
 from ..infra.db import upsert_strategic_verdict
+from .memory_guardian_agent import MemoryGuardianAgent
 
 
 _OHLC_CACHE: Dict[tuple[str, str, str], tuple[float, List[List[float]]]] = {}
+_MEMORY_GUARDIAN = MemoryGuardianAgent()
 
 
 def _cache_ttl() -> float:
@@ -131,6 +133,12 @@ def run(inp: SMCInput) -> Dict[str, Any]:
             "zones": {"1h": zones_1h[-5:], "15m": zones_15m[-5:]},
             "whale": whale,
         }
+        memory_alerts = _memory_lookup(inp.symbol, status, regime)
+        if memory_alerts:
+            verdict["memory_alerts"] = memory_alerts
+            negative = [ls for ls in memory_alerts if ls.get("outcome_after", 0.0) < 0]
+            if negative and status.startswith("SMC_"):
+                verdict["status"] = f"{status}_CAUTION"
         # Persist as before
         import json
         from datetime import datetime, timezone
@@ -232,6 +240,12 @@ def run(inp: SMCInput) -> Dict[str, Any]:
         "target_liquidity": target,
         "zones": {"1h": zones_1h[-3:], "15m": zones_15m[-3:]},
     }
+    memory_alerts = _memory_lookup(inp.symbol, verdict["status"], trend)
+    if memory_alerts:
+        verdict["memory_alerts"] = memory_alerts
+        negative = [ls for ls in memory_alerts if ls.get("outcome_after", 0.0) < 0]
+        if negative and verdict["status"].startswith("SMC_"):
+            verdict["status"] = f"{verdict['status']}_CAUTION"
 
     # Save to S3 for consumption by reactor (DB integration can be added via migrations)
     import json
@@ -263,6 +277,26 @@ def main() -> None:
     payload = SMCInput(**json.loads(sys.argv[1]))
     out = run(payload)
     print(json.dumps(out, ensure_ascii=False))
+
+
+def _memory_lookup(symbol: str, setup: str, regime: str) -> List[dict]:
+    if not setup or setup == "NO_SETUP":
+        return []
+    try:
+        res = _MEMORY_GUARDIAN.query(
+            {
+                "scope": "trading",
+                "context": {
+                    "symbol": symbol,
+                    "planned_signal": setup,
+                    "market_regime": regime,
+                },
+                "top_k": 3,
+            }
+        )
+        return res.output.get("lessons", []) if res and isinstance(res.output, dict) else []
+    except Exception:
+        return []
 
 
 if __name__ == "__main__":

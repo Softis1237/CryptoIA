@@ -199,6 +199,16 @@ Real‑time triggers
 
 PROM_PUSHGATEWAY_URL — URL Pushgateway Prometheus. Метрики (pipeline_step_seconds, pipeline_value, llm_calls, llm_failures) отправляются сюда.
 
+7. Адаптивная оркестрация и стратегические данные
+
+USE_MASTER_ORCHESTRATOR — включает интеллектуальный оркестратор (MasterOrchestratorAgent). При 1 основной цикл `scheduled_runner` строит план запуска агентов, при 0 используется прежняя логика `run_master_flow`.
+
+STRATEGIC_DATA_KEYWORDS — список ключевых слов (через запятую) для агента стратегического управления данными. Используется при проактивном поиске источников.
+
+PROJECT_TASKS_WEBHOOK — необязательный вебхук для отправки задач, созданных StrategicDataAgent, во внешнюю систему управления проектами (Jira/Linear/Notion). Если не задан, задачи логируются только в базе.
+
+MODEL_ARTIFACT_ROOT — каталог, из которого подгружаются артефакты моделей (например, ONNX для динамических индикаторов). По умолчанию `artifacts` в корне проекта.
+
 SENTRY_DSN — ключ для Sentry. При задании трейсбек ошибок отправляются в Sentry.
 
 JSON_LOGS — если 1, loguru пишет логи в JSON формате. Укажите LOG_LEVEL при необходимости.

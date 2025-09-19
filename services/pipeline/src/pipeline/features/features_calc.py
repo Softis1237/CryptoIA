@@ -14,6 +14,7 @@ from .features_cpd import enrich_with_cpd_simple
 from .features_kats import enrich_with_kats
 from .features_patterns import detect_patterns, load_patterns_from_db
 from .features_supply_demand import latest_supply_demand_metrics
+from .dynamic_params import IndicatorConfig, RegimeModelRouter
 
 
 class FeaturesCalcInput(BaseModel):
@@ -37,6 +38,9 @@ class FeaturesCalcOutput(BaseModel):
     features_path_s3: str
     feature_schema: List[str]
     snapshot_ts: str
+
+
+_INDICATOR_ROUTER = RegimeModelRouter()
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
@@ -182,6 +186,17 @@ def _volume_profile_features(
         return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
 
 
+def _select_indicator_config(df: pd.DataFrame, payload: FeaturesCalcInput) -> IndicatorConfig:
+    close = df["close"].astype(float)
+    ema_fast = close.ewm(span=20, adjust=False).mean()
+    ema_slow = close.ewm(span=50, adjust=False).mean()
+    trend = float(((ema_fast - ema_slow) / (close.abs() + 1e-9)).iloc[-1])
+    vol = float(close.pct_change().rolling(96).std().fillna(method="bfill").iloc[-1])
+    news_factor = min(1.0, len(payload.news_signals) / 12.0)
+    vec = np.array([trend, vol, news_factor], dtype=float)
+    return _INDICATOR_ROUTER.recommend(vec, fallback=IndicatorConfig())
+
+
 def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     raw = download_bytes(payload.prices_path_s3)
     import pyarrow as pa
@@ -192,12 +207,27 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     # Assume single symbol for MVP
     df = df.sort_values("ts").reset_index(drop=True)
 
+    cfg = _select_indicator_config(df, payload)
+
     # Technical features
     df["ema_20"] = _ema(df["close"], 20)
     df["ema_50"] = _ema(df["close"], 50)
+    df["rsi_dynamic"] = _rsi(df["close"], cfg.window_rsi)
+    df["atr_dynamic"] = _atr(df, cfg.window_atr)
+    bb_u_dyn, bb_l_dyn, bb_w_dyn = _bollinger(
+        df["close"].astype(float), cfg.bollinger_window, cfg.bollinger_std
+    )
+    df["bb_upper_dynamic"] = bb_u_dyn
+    df["bb_lower_dynamic"] = bb_l_dyn
+    df["bb_width_dynamic"] = bb_w_dyn.fillna(0.0)
+    # сохраняем классические индикаторы для обратной совместимости
     df["rsi_14"] = _rsi(df["close"], 14)
     df["atr_14"] = _atr(df, 14)
     df["ret_1m"] = df["close"].pct_change().fillna(0.0)
+    df["indicator_cfg_rsi"] = cfg.window_rsi
+    df["indicator_cfg_atr"] = cfg.window_atr
+    df["indicator_cfg_bb_window"] = cfg.bollinger_window
+    df["indicator_cfg_bb_std"] = cfg.bollinger_std
 
     # Advanced indicators
     macd, macd_sig, macd_hist = _macd(df["close"].astype(float))
