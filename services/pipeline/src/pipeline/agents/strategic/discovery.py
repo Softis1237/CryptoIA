@@ -2,7 +2,10 @@ from __future__ import annotations
 
 """Модуль поиска и первичной оценки источников данных."""
 
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from pydantic import HttpUrl
@@ -33,6 +36,18 @@ def _catalog_snapshot() -> Sequence[dict[str, object]]:
     Источник данных можно расширять — структура максимально простая, чтобы заменить
     статический массив на загрузку из S3 или внешнего API без изменения интерфейса.
     """
+
+    custom_path = Path(os.getenv("DATA_SOURCES_CATALOG", "data/sources_catalog.json"))
+    if custom_path.exists():
+        try:
+            with custom_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return tuple(dict(item) for item in data)
+        except Exception as exc:  # noqa: BLE001
+            from loguru import logger
+
+            logger.warning("strategic.discovery: failed to read %s: %s", custom_path, exc)
 
     return (
         {
@@ -117,4 +132,3 @@ def crawl_catalogs(keywords: Sequence[str]) -> Iterator[DiscoveryCandidate]:
     entries.sort(key=lambda pair: pair[0], reverse=True)
     for _, candidate in entries:
         yield candidate
-

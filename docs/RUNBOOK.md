@@ -105,3 +105,40 @@ PY
 - Генерация ≥3 прибыльных гипотез (модуль 5).
 Записывайте фактические значения в `docs/METRICS_BASELINE.md` и обновляйте по итогам каждой итерации.
 
+## 7. Чек-лист по ТЗ
+
+Для оперативного контроля открытых задач следите за документом `docs/TODO.md`: там перечислены шаги, которые ещё предстоит выполнить (подключение боевых источников, калибровка моделей, мониторинг и т.д.). После выполнения пунктов обновляйте файл, чтобы документация оставалась актуальной.
+
+## 8. Пошаговое выполнение (с бесплатными ресурсами)
+
+### 8.1 Стратегическое управление данными
+- **Источники данных**: используйте бесплатные CSV/JSON из [CryptoDataDownload](https://www.cryptodatadownload.com/), [CoinGecko API](https://www.coingecko.com/en/api/documentation) и открытые дашборды Dune (через экспорт CSV). Пример каталога лежит в `data/sources_catalog.json` (можно переопределить через `DATA_SOURCES_CATALOG`).
+- **Интеграция**: `strategic/discovery.py` уже подхватывает JSON каталога; достаточно добавить новые записи в файл.
+- **Калибровка trust-score**: храните историческую корреляцию сигналов в `data/source_trust_calibration.csv` (или задайте путь через `SOURCE_TRUST_CALIBRATION`).
+- **Калибровка trust-score**: сохраните исторический CSV с колонками `source, signal_correlation, popularity` и используйте его при запуске агента для пересчёта веса.
+- **Авто-задачи**: для теста `PROJECT_TASKS_WEBHOOK` используйте бесплатный сервис типа [Webhook.site](https://webhook.site/) или локальный FastAPI listener.
+
+### 8.2 Динамический технический анализ
+- **Датасет для обучения**: скачайте бесплатные OHLCV-файлы с CryptoDataDownload и соберите CSV (как в примере `data/indicator_training.csv`).
+- **Обучение моделей**: запускайте `pipeline.ops.train_indicator_params` с собранным CSV (уже добавлено в чек-лист). Это не требует платных сервисов.
+- **Валидация Chart Vision**: сформируйте изображения графиков локально (`matplotlib`/`plotly`) и используйте бесплатный tier OpenAI (или локальные модели вроде [LLaVA](https://github.com/haotian-liu/LLaVA)) — главное, чтобы модель могла работать без доп. затрат.
+- **Technical Synthesis статистика**: прогоните backtest на локальных данных (см. `pipeline/trading/backtest/runner.py`) и сохраните результаты в `docs/METRICS_BASELINE.md`.
+
+### 8.3 Адаптивная оркестрация
+- **Event Listener**: запустите локально `python -m pipeline.orchestration.event_listener` (в docker-compose или systemd). Все зависимости бесплатны.
+- **Экономический календарь**: используйте бесплатные RSS/JSON, например [Investing.com Economic Calendar (CSV)](https://www.investing.com/economic-calendar/) или [FRED API](https://fred.stlouisfed.org/docs/api/fred/). Экспортируйте данные в `data/eco_calendar.csv` и модифицируйте `eco_calendar.py`, чтобы брать данные из файла при отсутствии API-ключей.
+
+### 8.4 Память и обучение
+- **Кураторский процесс**: создайте Jupyter-ноутбук для анализа таблицы `agent_lessons_structured` и запускайте его локально (pandas + SQLAlchemy).
+- **Мониторинг Memory Guardian**: добавьте логирование (`logger.info`) и используйте Prometheus Gauges (уже подключены) для записи latency и количества релевантных уроков.
+
+### 8.5 Красная Команда
+- **Сценарии**: для “ложного пробоя” и “взрывной волатильности” используйте локальные функций в `simulations/red_team/scenario.py` (например, с numpy).
+- **Отчёты**: записывайте результаты Red Team в SQLite/CSV и просматривайте в Jupyter/Pandas. Все инструменты бесплатные.
+
+### 8.6 Метрики и мониторинг
+- **Baseline**: заполните `docs/METRICS_BASELINE.md` после локальных прогонов (pytest, backtests, safe-mode).
+- **Prometheus/Grafana**: запустите их через docker-compose с бесплатными образами (официальные open-source).
+
+### 8.7 Runbook
+- Следуйте инструкциям из этого файла (не требуется платных сервисов): `.env`, миграции с `psql`, обучение моделей, safe-mode тесты и мониторинг.

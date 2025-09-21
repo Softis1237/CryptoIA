@@ -2,7 +2,10 @@ from __future__ import annotations
 
 """Подсистема динамической оценки доверия к источникам данных."""
 
+import csv
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Mapping
 
 from loguru import logger
@@ -45,9 +48,15 @@ class TrustUpdate:
 class TrustMonitor:
     """Высчитывает доверие на основе корреляций и кросс-валидации."""
 
-    def __init__(self, min_trust: float = 0.1, max_trust: float = 0.98) -> None:
+    def __init__(
+        self,
+        min_trust: float = 0.1,
+        max_trust: float = 0.98,
+        calibration_path: str | None = None,
+    ) -> None:
         self._min_trust = min_trust
         self._max_trust = max_trust
+        self._calibration = self._load_calibration(calibration_path)
 
     def fetch_existing(self) -> List[ExistingSource]:
         rows = db.fetch_data_sources(limit=200)
@@ -76,6 +85,17 @@ class TrustMonitor:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TrustMonitor: некорректный кандидат %s: %s", item, exc)
                 continue
+            cal = self._calibration.get(name.lower())
+            if cal:
+                try:
+                    corr = float(cal.get("signal_correlation", corr))
+                except Exception:
+                    pass
+                try:
+                    hist_pop = float(cal.get("popularity", popularity))
+                    popularity = (popularity + hist_pop) / 2.0
+                except Exception:
+                    pass
             prev = existing.get(name)
             prev_score = prev.trust_score if prev else 0.3
             new_score = self._clip(self._aggregate(base_trust, popularity, corr))
@@ -90,7 +110,11 @@ class TrustMonitor:
                     new_score=new_score,
                     reason=reason,
                     should_escalate=should_escalate,
-                    meta={"corr": corr, "popularity": popularity},
+                    meta={
+                        "corr": corr,
+                        "popularity": popularity,
+                        "calibrated": bool(cal),
+                    },
                 )
             )
         return updates
@@ -101,3 +125,23 @@ class TrustMonitor:
 
     def _clip(self, value: float) -> float:
         return max(self._min_trust, min(self._max_trust, value))
+
+    def _load_calibration(self, calibration_path: str | None) -> Dict[str, Dict[str, float]]:
+        path = Path(calibration_path or os.getenv("SOURCE_TRUST_CALIBRATION", "data/source_trust_calibration.csv"))
+        mapping: Dict[str, Dict[str, float]] = {}
+        if not path.exists():
+            return mapping
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = (row.get("source") or "").strip().lower()
+                    if not name:
+                        continue
+                    mapping[name] = {
+                        "signal_correlation": float(row.get("signal_correlation", 0.0) or 0.0),
+                        "popularity": float(row.get("popularity", 0.0) or 0.0),
+                    }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("TrustMonitor: failed to load calibration %s: %s", path, exc)
+        return mapping

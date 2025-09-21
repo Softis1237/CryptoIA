@@ -90,7 +90,7 @@ services:
   pushgateway:
     image: prom/pushgateway:latest
     ports:
-      - "9095:9091"
+      - "9096:9091"
     restart: unless-stopped
 
   prometheus:
@@ -98,7 +98,7 @@ services:
     volumes:
       - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:Z
     ports:
-      - "9094:9090"
+      - "9097:9090"
     depends_on:
       - pushgateway
     restart: unless-stopped
@@ -114,7 +114,7 @@ services:
       - ./ops/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:Z
       - ./ops/grafana/dashboards:/etc/grafana/dashboards:Z
     ports:
-      - "3003:3000"
+      - "3004:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

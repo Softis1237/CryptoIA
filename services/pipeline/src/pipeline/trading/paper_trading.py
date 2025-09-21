@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 import ccxt
 from loguru import logger
+from psycopg2.extras import Json
 
 from ..infra.db import get_conn
 from ..infra.s3 import upload_bytes
@@ -36,7 +37,7 @@ def _ensure_account(start_equity: float = 1000.0) -> str:
             cfg = {"month": month}
             cur.execute(
                 "INSERT INTO paper_accounts (start_equity, equity, cfg_json) VALUES (%s, %s, %s) RETURNING id",
-                (start_equity, start_equity, cfg),
+                (start_equity, start_equity, Json(cfg)),
             )
             acc_id = cur.fetchone()[0]
             logger.info(f"Created monthly paper account {acc_id} for {month}")
@@ -77,7 +78,7 @@ def _open_from_suggestion(cur, acc_id: str, sug_row: Tuple) -> None:
     cur.execute(
         "INSERT INTO paper_positions (account_id, opened_at, side, entry, leverage, qty, sl, tp, status, meta_json) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s) RETURNING pos_id",
-        (acc_id, _now_utc(), side, entry, lev, qty, sl, tp, {"run_id": run_id}),
+        (acc_id, _now_utc(), side, entry, lev, qty, sl, tp, Json({"run_id": run_id})),
     )
     pos_id = cur.fetchone()[0]
     cur.execute(
