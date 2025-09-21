@@ -51,6 +51,7 @@ def debate(
         "You are an arbiter: distill the arguments into 3–6 grounded bullet points.\n"
         'Return JSON exactly as {"bullets":[string,...],"risk_flags":[string,...]} with no extra fields.\n'
         "Base only on model arguments, regime, top news and similar windows; do not invent numbers.\n"
+        "When evaluating news arguments, prioritise evidence from sources with higher trust_score; treat low trust sources as weak evidence.\n"
         "If memory of previous releases is provided — consider it as context; if trust weights are provided — use them to prioritize arguments."
         + ("\nConsider the following lessons learned from similar situations and avoid repeating mistakes:\n" + lessons_txt if lessons_txt else "")
         + ("\nConsider relevant knowledge points (RAG):\n" + knowledge_txt if knowledge_txt else "")

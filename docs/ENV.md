@@ -210,6 +210,9 @@ PROJECT_TASKS_WEBHOOK — необязательный вебхук для от
 MODEL_ARTIFACT_ROOT — каталог, из которого подгружаются артефакты моделей (например, ONNX для динамических индикаторов). По умолчанию `artifacts` в корне проекта.
 RED_TEAM_STRATEGY — стратегия, применяемая Красной Командой при бэктесте синтетических сценариев (формат `module:ClassName`, по умолчанию `pipeline.trading.backtest.strategies:MovingAverageCrossStrategy`).
 RED_TEAM_BASE_PRICE — базовая цена (USD) для генерации синтетических рядов при стресс‑тестах (по умолчанию 30000).
+SAFE_MODE_RISK_PER_TRADE — доля капитала для сделки в safe-mode (например, 0.003).
+SAFE_MODE_LEVERAGE_CAP — максимальное плечо в safe-mode (по умолчанию 5).
+ORCHESTRATOR_EVENT_POLL_SEC — период опроса очереди событий фонового слушателя (по умолчанию 10 секунд).
 
 SENTRY_DSN — ключ для Sentry. При задании трейсбек ошибок отправляются в Sentry.
 

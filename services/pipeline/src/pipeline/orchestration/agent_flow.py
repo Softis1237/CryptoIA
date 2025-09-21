@@ -18,6 +18,7 @@ Env flags:
 """
 
 import argparse
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -529,6 +530,18 @@ class TradeAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
+            safe_mode = os.getenv("SAFE_MODE", "0") in {"1", "true", "True"}
+            try:
+                overrides = json.loads(os.getenv("SAFE_MODE_RISK_OVERRIDES", "{}"))
+            except Exception:
+                overrides = {}
+            base_risk = float(payload.get("risk_per_trade", 0.005))
+            base_leverage = float(payload.get("leverage_cap", 25.0))
+            if safe_mode:
+                if "risk_per_trade" in overrides:
+                    base_risk = min(base_risk, float(overrides["risk_per_trade"]))
+                if "leverage_cap" in overrides:
+                    base_leverage = min(base_leverage, float(overrides["leverage_cap"]))
             # Construct input strictly with expected fields
             tri = TradeRecommendInput(
                 current_price=float(payload.get("current_price")),
@@ -539,8 +552,8 @@ class TradeAgent:
                 atr=float(payload.get("atr")),
                 regime=payload.get("regime"),
                 account_equity=float(payload.get("account_equity", 1000.0)),
-                risk_per_trade=float(payload.get("risk_per_trade", 0.005)),
-                leverage_cap=float(payload.get("leverage_cap", 25.0)),
+                risk_per_trade=base_risk,
+                leverage_cap=base_leverage,
                 now_ts=(
                     int(payload.get("now_ts"))
                     if payload.get("now_ts") is not None
@@ -2610,6 +2623,11 @@ def run_release_flow(
         guardian_lessons = mg_result.output.get("lessons", []) if mg_result and isinstance(mg_result.output, dict) else []
     except Exception:
         guardian_lessons = []
+    ta_context = {
+        "technical_synthesis": synthesis_output,
+        "vision": vision_output,
+        "regime_features": regime.get("features", {}),
+    }
     # Optional Event Study: if we have high-impact facts
     event_summary_lines: list[str] = []
     try:
@@ -2658,6 +2676,7 @@ def run_release_flow(
             neighbors=neighbors,
             memory=memory,
             trust=trust,
+            ta=ta_context,
             lessons=guardian_lessons,
             source_trust=source_trust,
         )
@@ -2669,6 +2688,7 @@ def run_release_flow(
             neighbors=neighbors,
             memory=memory,
             trust=trust,
+            ta=ta_context,
             lessons=guardian_lessons,
             source_trust=source_trust,
         )

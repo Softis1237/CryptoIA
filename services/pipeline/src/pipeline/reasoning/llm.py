@@ -18,7 +18,7 @@ _LLM_FAILURES = 0
 
 def call_openai_json(
     system_prompt: str,
-    user_prompt: str,
+    user_prompt,
     model: Optional[str] = None,
     temperature: float = 0.2,
 ) -> dict:
@@ -45,17 +45,23 @@ def call_openai_json(
         model_name = model or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
         max_tokens = int(os.getenv("LLM_MAX_TOKENS", "400"))
         timeout = float(os.getenv("OPENAI_TIMEOUT_SEC", "15"))
+        if isinstance(user_prompt, (dict, list)):
+            user_prompt_serialized = _json.dumps(user_prompt, ensure_ascii=False, sort_keys=True)
+            user_content = user_prompt
+        else:
+            user_prompt_serialized = str(user_prompt)
+            user_content = user_prompt
         logger.debug(
             "OpenAI request",
             model=model_name,
             temperature=temperature,
             system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=user_prompt_serialized,
             max_tokens=max_tokens,
         )
 
         ttl = int(os.getenv("LLM_CACHE_TTL_SEC", "600"))
-        key = _hash_key("openai", model_name, system_prompt, user_prompt)
+        key = _hash_key("openai", model_name, system_prompt, user_prompt_serialized)
         cached = _try_cache_get(key)
         if cached is not None:
             _LLM_CACHE_HITS += 1
@@ -70,7 +76,7 @@ def call_openai_json(
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
         )
         text = resp.choices[0].message.content or "{}"

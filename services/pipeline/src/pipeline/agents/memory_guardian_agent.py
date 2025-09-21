@@ -71,7 +71,22 @@ class MemoryGuardianAgent(BaseAgent):
         embedding = self._embed_context(params.context)
         if not embedding:
             return AgentResult(name=f"{self.name}-query", ok=True, output={"lessons": []})
-        lessons = db.search_structured_lessons(embedding, params.scope, params.top_k)
+        filters: Dict[str, Any] = {}
+        regime = params.context.get("market_regime")
+        if regime:
+            filters["market_regime"] = regime
+        err_type = params.context.get("error_type")
+        if err_type:
+            filters["error_type"] = err_type
+        planned = params.context.get("planned_signal")
+        if isinstance(planned, str) and planned:
+            filters["triggering_signal"] = planned
+        lessons = db.search_structured_lessons(
+            embedding,
+            params.scope,
+            params.top_k,
+            filters=filters,
+        )
         return AgentResult(name=f"{self.name}-query", ok=True, output={"lessons": lessons})
 
     def refresh(self, scope: str = "trading") -> dict:

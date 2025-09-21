@@ -1771,17 +1771,35 @@ def upsert_structured_lesson_vector(hash_val: str, embedding: Iterable[float]) -
             cur.execute(sql, (vec, hash_val))
 
 
-def search_structured_lessons(embedding: Iterable[float], scope: str, top_k: int = 5) -> list[dict]:
+def search_structured_lessons(
+    embedding: Iterable[float], scope: str, top_k: int = 5, filters: Dict[str, Any] | None = None
+) -> list[dict]:
     ensure_vector()
     vec = "[" + ",".join(f"{float(v):.6f}" for v in embedding) + "]"
+    filters = filters or {}
+    where = ["lesson_embedding IS NOT NULL"]
+    params: list[Any] = []
+    if filters.get("market_regime"):
+        where.append("market_regime=%s")
+        params.append(filters["market_regime"])
+    if filters.get("error_type"):
+        where.append("error_type=%s")
+        params.append(filters["error_type"])
+    if filters.get("triggering_signal"):
+        where.append("%s = ANY(triggering_signals)")
+        params.append(filters["triggering_signal"])
+    where.append("scope=%s")
+    params.append(scope)
+    condition = " AND ".join(where)
     sql = (
         "SELECT lesson, confidence_before, outcome_after, hash FROM agent_lessons_structured "
-        "WHERE lesson_embedding IS NOT NULL AND scope=%s ORDER BY lesson_embedding <-> %s::vector LIMIT %s"
+        f"WHERE {condition} ORDER BY lesson_embedding <-> %s::vector LIMIT %s"
     )
+    params.extend([vec, int(top_k)])
     out: list[dict] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (scope, vec, int(top_k)))
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall() or []
             for lesson, confidence_before, outcome_after, hash_val in rows:
                 out.append(

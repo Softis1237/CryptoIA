@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Chart Vision Agent — мультитаймфреймовый визуальный анализ."""
 
-import json
 import os
 from dataclasses import dataclass
 from typing import List
@@ -89,17 +88,25 @@ class ChartVisionAgent(BaseAgent):
         try:
             sys_prompt = (
                 "You are a multimodal technical analyst."
-                " Analyse the supplied chart image URLs on multiple timeframes"
-                " and return JSON with key 'insights': list of"
+                " Analyse the supplied chart image URLs on multiple timeframes."
+                " Return JSON with key 'insights': list of objects"
                 " {timeframe, bias (bullish/bearish/neutral), confidence (0..1), notes[]}"
+                " Bias should reflect the dominant signal across frames, confidence must be calibrated to 0..1."
             )
-            usr_payload = {
-                "images": params.image_urls,
-                "regime": params.regime,
-            }
+            user_content = [
+                {
+                    "type": "text",
+                    "text": (
+                        "Evaluate the technical context for symbol {symbol} in regime {regime}. "
+                        "Identify confluence or conflicts across provided timeframes."
+                    ).format(symbol=params.symbol, regime=params.regime),
+                }
+            ]
+            for url in params.image_urls:
+                user_content.append({"type": "image_url", "image_url": {"url": url}})
             raw = call_openai_json(
                 sys_prompt,
-                json.dumps(usr_payload),
+                user_content,
                 model=os.getenv("OPENAI_MODEL_VISION") or os.getenv("OPENAI_MODEL_MASTER"),
             )
             items = raw.get("insights") if isinstance(raw, dict) else None

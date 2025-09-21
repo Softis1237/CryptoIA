@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Master Orchestrator Agent — адаптивный центр управления пайплайном."""
 
+import json
+import os
 from dataclasses import dataclass
 from typing import Dict, Iterable
 
@@ -63,7 +65,12 @@ class MasterOrchestratorAgent(BaseAgent):
                         force_mode = "High-Alert"
                         summary_status = "escalated"
                         break
-            plan = self._ctx.policy.build_plan(events, slot=params.slot, force_mode=force_mode)
+            plan = self._ctx.policy.build_plan(
+                events,
+                slot=params.slot,
+                force_mode=force_mode,
+                pending_events=pending_events,
+            )
             summary = self._execute(plan, params, events)
             final_mode = plan.mode
             if summary.get("anomaly_triggered") and plan.mode != "High-Alert":
@@ -105,7 +112,27 @@ class MasterOrchestratorAgent(BaseAgent):
                         results["anomaly_triggered"] = True
                         results.setdefault("alerts", {})["strategic_data"] = anomalies
                 elif job == "master_flow":
-                    results["master_flow"] = run_master_flow(slot=plan.slot)
+                    prev_safe = os.environ.get("SAFE_MODE")
+                    prev_overrides = os.environ.get("SAFE_MODE_RISK_OVERRIDES")
+                    try:
+                        if plan.safe_mode:
+                            os.environ["SAFE_MODE"] = "1"
+                            if plan.risk_overrides:
+                                os.environ["SAFE_MODE_RISK_OVERRIDES"] = json.dumps(plan.risk_overrides)
+                        else:
+                            os.environ.pop("SAFE_MODE", None)
+                            os.environ.pop("SAFE_MODE_RISK_OVERRIDES", None)
+                        results["master_flow"] = run_master_flow(slot=plan.slot)
+                    finally:
+                        if plan.safe_mode:
+                            if prev_safe is None:
+                                os.environ.pop("SAFE_MODE", None)
+                            else:
+                                os.environ["SAFE_MODE"] = prev_safe
+                            if prev_overrides is None:
+                                os.environ.pop("SAFE_MODE_RISK_OVERRIDES", None)
+                            else:
+                                os.environ["SAFE_MODE_RISK_OVERRIDES"] = prev_overrides
                 elif job == "memory_guardian_refresh":
                     results["memory_refresh"] = self._ctx.memory_agent.refresh(scope="trading")
                 elif job == "red_team_simulation":
@@ -114,6 +141,8 @@ class MasterOrchestratorAgent(BaseAgent):
                 logger.exception("MasterOrchestrator job %s failed: %s", job, exc)
                 results.setdefault("failed_jobs", []).append({"job": job, "error": str(exc)})
         results["comments"] = plan.comments
+        results["safe_mode"] = plan.safe_mode
+        results["risk_overrides"] = plan.risk_overrides
         return results
 
 

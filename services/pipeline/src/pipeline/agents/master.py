@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -163,6 +164,10 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         ta = run_chart_reasoning(_CRInput(features_path_s3=features_s3))
     except Exception:
         ta = {"technical_sentiment": "neutral", "confidence_score": 0.5, "key_observations": []}
+    if hasattr(ta, "model_dump"):
+        ta = ta.model_dump()
+    elif not isinstance(ta, dict):
+        ta = dict(ta or {})
 
     # 5) Debate + explain
     try:
@@ -199,20 +204,6 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             guardian_lessons = mg_result.output.get("lessons", []) or []
     except Exception:
         guardian_lessons = []
-    deb_text, risk_flags = multi_debate(
-        regime=str(regime.get("label")),
-        news_top=news_top,
-        neighbors=topk,
-        memory=mem,
-        trust=(e4.get("weights") or {}),
-        ta=ta,
-        lessons=guardian_lessons,
-        source_trust=source_trust,
-    )
-    expl_text = explain_short(
-        float(e4.get("y_hat", 0.0) or 0.0), float(e4.get("proba_up", 0.5) or 0.5), news_top, e4.get("rationale_points") or []
-    )
-
     chart_s3 = None
     vision_output = {"bias": "neutral", "confidence": 0.5, "insights": []}
     synthesis_output = {"verdict": {"bias": "NEUTRAL", "confidence": 0.0, "score": 0.0}, "components": []}
@@ -256,9 +247,51 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     except Exception:
         synthesis_output = {"verdict": {"bias": "NEUTRAL", "confidence": 0.0, "score": 0.0}, "components": []}
 
+    if vision_output:
+        mem.append(
+            f"chart_vision bias={vision_output.get('bias')} conf={vision_output.get('confidence')}"
+        )
+    if synthesis_output:
+        verdict = synthesis_output.get("verdict", {})
+        mem.append(
+            f"tech_synthesis bias={verdict.get('bias')} conf={verdict.get('confidence')} score={verdict.get('score')}"
+        )
+    tech_sentiment = ta.get("technical_sentiment")
+    if tech_sentiment:
+        mem.append(f"chart_reasoning sentiment={tech_sentiment}")
+
+    ta_context = dict(ta)
+    ta_context["technical_synthesis"] = synthesis_output
+    ta_context["vision"] = vision_output
+    deb_text, risk_flags = multi_debate(
+        regime=str(regime.get("label")),
+        news_top=news_top,
+        neighbors=topk,
+        memory=mem,
+        trust=(e4.get("weights") or {}),
+        ta=ta_context,
+        lessons=guardian_lessons,
+        source_trust=source_trust,
+    )
+    expl_text = explain_short(
+        float(e4.get("y_hat", 0.0) or 0.0), float(e4.get("proba_up", 0.5) or 0.5), news_top, e4.get("rationale_points") or []
+    )
+
     # 6) Trade card
     last_price = float(out4.get("last_price", 0.0) or 0.0)
     atr = float(out4.get("atr", 0.0) or 0.0)
+    safe_mode = os.getenv("SAFE_MODE", "0") in {"1", "true", "True"}
+    try:
+        overrides = json.loads(os.getenv("SAFE_MODE_RISK_OVERRIDES", "{}"))
+    except Exception:
+        overrides = {}
+    base_risk = float(os.getenv("RISK_PER_TRADE", "0.005"))
+    base_leverage = float(os.getenv("RISK_LEVERAGE_CAP", "25"))
+    if safe_mode:
+        if "risk_per_trade" in overrides:
+            base_risk = min(base_risk, float(overrides["risk_per_trade"]))
+        if "leverage_cap" in overrides:
+            base_leverage = min(base_leverage, float(overrides["leverage_cap"]))
     tri = TradeRecommendInput(
         current_price=last_price,
         y_hat_4h=float(e4.get("y_hat", 0.0) or 0.0),
@@ -268,8 +301,8 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         atr=atr,
         regime=str(regime.get("label")),
         account_equity=float(os.getenv("ACCOUNT_EQUITY", "1000")),
-        risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.005")),
-        leverage_cap=float(os.getenv("RISK_LEVERAGE_CAP", "25")),
+        risk_per_trade=base_risk,
+        leverage_cap=base_leverage,
         now_ts=int(now.timestamp()),
         tz_name=os.getenv("TIMEZONE", "Europe/Moscow"),
         valid_for_minutes=90,
@@ -324,6 +357,8 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         "synthesis": synthesis_output,
         "smc": smc_snapshot,
         "indicators": indicators_snapshot,
+        "safe_mode": safe_mode,
+        "risk_overrides": overrides,
     }
     insert_run_summary(run_id, final_summary, None)
 

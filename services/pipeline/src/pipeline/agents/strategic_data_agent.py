@@ -124,8 +124,9 @@ class StrategicDataAgent(BaseAgent):
                 ensure_task(
                     summary=f"[Data] Встроить источник {src.name}",
                     description=(
-                        f"Найден новый источник данных {src.url} (provider={src.provider})."
-                        " Проверьте схему, лимиты и авторизацию."
+                        f"Найден новый источник данных {src.url} (provider={src.provider}). "
+                        f"popularity={src.popularity:.2f}, reputation={src.reputation:.2f}. "
+                        "Проверьте схему данных, авторизацию и лимиты; добавьте мониторинг доверия."
                     ),
                     priority="medium",
                     tags=["data_source", "ingest"],
@@ -166,7 +167,10 @@ class StrategicDataAgent(BaseAgent):
         for name in anomalies:
             ensure_task(
                 summary=f"[Data] Аномалия потока {name}",
-                description="Detector зафиксировал превышение латентности/ошибок.",
+                description=(
+                    "Detector зафиксировал превышение латентности/ошибок. "
+                    f"run_id={params.run_id}. Проверьте зеркальные источники и переключите safe-mode."
+                ),
                 priority="critical",
                 tags=["anomaly", "safe_mode"],
             )
