@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -36,3 +37,15 @@ def acquire_release_lock(slot: str, ttl_seconds: int = 1800, tz_name: str | None
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Redis lock error: {e}")
         return True, key
+
+
+@contextmanager
+def slot_lock(slot: str, ttl_seconds: int = 1800, tz_name: str | None = None):
+    ok, key = acquire_release_lock(slot, ttl_seconds=ttl_seconds, tz_name=tz_name)
+    if not ok:
+        raise RuntimeError(f"slot lock already active for {key}")
+    try:
+        yield
+    finally:
+        # Locks истекают автоматически по TTL; явный release не требуется.
+        pass
