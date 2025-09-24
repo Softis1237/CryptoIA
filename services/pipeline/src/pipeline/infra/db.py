@@ -765,6 +765,8 @@ def upsert_trade_suggestion(run_id: str, card: dict) -> None:
         "signal_time": card.get("signal_time"),
         "valid_until": card.get("valid_until"),
         "horizon_ends_at": card.get("horizon_ends_at"),
+        "risk_profile": card.get("risk_profile"),
+        "arbiter": card.get("arbiter"),
     }
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -982,6 +984,31 @@ def fetch_recent_predictions(
                     )
                 )
     return out
+
+
+def fetch_prediction_for_run(run_id: str, horizon: str = "4h") -> dict | None:
+    """Return persisted prediction summary for given run and horizon."""
+
+    sql = (
+        "SELECT y_hat, pi_low, pi_high, proba_up, created_at FROM predictions "
+        "WHERE run_id=%s AND horizon=%s ORDER BY created_at DESC LIMIT 1"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (run_id, horizon))
+            row = cur.fetchone()
+            if not row:
+                return None
+            y_hat, pi_low, pi_high, proba_up, created_at = row
+    return {
+        "run_id": run_id,
+        "horizon": horizon,
+        "y_hat": float(y_hat or 0.0),
+        "pi_low": float(pi_low or 0.0),
+        "pi_high": float(pi_high or 0.0),
+        "proba_up": float(proba_up or 0.0),
+        "created_at": created_at.isoformat() if created_at else "",
+    }
 
 
 def upsert_agent_prediction(agent: str, run_id: str, result_json: dict) -> None:

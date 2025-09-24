@@ -147,12 +147,18 @@ def tool_run_models_and_ensemble(params: Dict[str, Any]) -> Dict[str, Any]:
     preds = [p.model_dump() for p in m.preds]
     trust = params.get("trust_weights") or None
     neighbors = params.get("neighbors") or None
+    weight_overrides = params.get("meta_weight_overrides") or None
+    risk_appetite = params.get("risk_appetite")
     e = _run_ensemble(
         _EnsembleInput(
             preds=preds,
             trust_weights=trust if isinstance(trust, dict) else None,
             horizon=(str(hz) if isinstance(hz, str) else None),
             neighbors=neighbors if isinstance(neighbors, list) else None,
+            meta_weight_overrides=weight_overrides
+            if isinstance(weight_overrides, dict)
+            else None,
+            risk_appetite=risk_appetite,
         )
     )
     return {

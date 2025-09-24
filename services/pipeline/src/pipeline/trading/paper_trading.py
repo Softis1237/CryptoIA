@@ -148,27 +148,34 @@ def executor_once(run_id: Optional[str] = None):
 
 def _close_position(cur, pos_id: str, exit_price: float, reason: str):
     cur.execute(
-        "SELECT side, entry, qty FROM paper_positions WHERE pos_id=%s FOR UPDATE",
+        "SELECT side, entry, qty, opened_at, sl, tp FROM paper_positions WHERE pos_id=%s FOR UPDATE",
         (pos_id,),
     )
-    side, entry, qty = cur.fetchone()
+    side, entry, qty, opened_at, sl, tp = cur.fetchone()
     side = str(side)
     entry = float(entry)
     qty = float(qty)
+    opened_at_dt = opened_at if isinstance(opened_at, datetime) else _now_utc()
+    sl = float(sl)
+    tp = float(tp)
     # PnL in USDT
     if side == "LONG":
         pnl = (exit_price - entry) * qty
     else:
         pnl = (entry - exit_price) * qty
+    now_dt = _now_utc()
+    elapsed_s = max(1, int((now_dt - opened_at_dt).total_seconds()))
+    rr_actual = abs(exit_price - entry) / max(1e-6, abs(entry - sl)) if sl else 0.0
     cur.execute("UPDATE paper_positions SET status='CLOSED' WHERE pos_id=%s", (pos_id,))
     cur.execute(
         "INSERT INTO paper_trades (pos_id, ts, price, qty, side, fee, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (pos_id, _now_utc(), exit_price, qty, "CLOSE", 0.0, reason),
+        (pos_id, now_dt, exit_price, qty, "CLOSE", 0.0, reason),
     )
     # Update PNL and account equity
     cur.execute(
-        "INSERT INTO paper_pnl (pos_id, realized_pnl) VALUES (%s, %s) ON CONFLICT (pos_id) DO UPDATE SET realized_pnl=excluded.realized_pnl",
-        (pos_id, pnl),
+        "INSERT INTO paper_pnl (pos_id, realized_pnl, rr, elapsed_s) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (pos_id) DO UPDATE SET realized_pnl=excluded.realized_pnl, rr=excluded.rr, elapsed_s=excluded.elapsed_s",
+        (pos_id, pnl, rr_actual, elapsed_s),
     )
     cur.execute("SELECT account_id FROM paper_positions WHERE pos_id=%s", (pos_id,))
     account_id = cur.fetchone()[0]
@@ -180,7 +187,7 @@ def _close_position(cur, pos_id: str, exit_price: float, reason: str):
     equity = float(cur.fetchone()[0])
     cur.execute(
         "INSERT INTO paper_equity_curve (ts, account_id, equity) VALUES (%s, %s, %s) ON CONFLICT (ts, account_id) DO NOTHING",
-        (_now_utc(), account_id, equity),
+        (now_dt, account_id, equity),
     )
     # Post‑mortem lesson (best-effort)
     try:
@@ -196,6 +203,7 @@ def _close_position(cur, pos_id: str, exit_price: float, reason: str):
                 "qty": qty,
                 "pnl": pnl,
                 "reason": reason,
+                "elapsed_minutes": round(elapsed_s / 60.0, 2),
             }
             from ..agents.post_mortem import run as post_mortem_run, PostMortemInput
 

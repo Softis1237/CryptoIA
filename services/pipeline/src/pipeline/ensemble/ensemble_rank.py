@@ -8,6 +8,10 @@ from pydantic import BaseModel
 from ..utils.horizons import horizon_to_timedelta
 
 
+def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return float(min(hi, max(lo, value)))
+
+
 class EnsembleInput(BaseModel):
     preds: List[dict]
     trust_weights: dict | None = None  # optional per-model trust multipliers
@@ -15,6 +19,8 @@ class EnsembleInput(BaseModel):
     # Optional: list of similar windows for context-aware weighting
     # Each item: {"period": iso-ts string, "distance": float}
     neighbors: List[Dict[str, Any]] | None = None
+    meta_weight_overrides: Dict[str, float] | None = None
+    risk_appetite: float | None = None
 
 
 class EnsembleOutput(BaseModel):
@@ -90,6 +96,14 @@ def run(payload: EnsembleInput) -> EnsembleOutput:
         if m in similar_bonus:
             base *= max(0.0, 1.0 + float(similar_bonus.get(m, 0.0)))
         weights[m] = base
+
+    if payload.meta_weight_overrides:
+        for model, mult in payload.meta_weight_overrides.items():
+            if model in weights:
+                try:
+                    weights[model] *= max(0.0, float(mult))
+                except Exception:
+                    continue
     total_weight = sum(weights.values())
 
     if total_weight == 0:
@@ -106,6 +120,13 @@ def run(payload: EnsembleInput) -> EnsembleOutput:
     low = wavg("pi_low")
     high = wavg("pi_high")
     proba_up = wavg("proba_up")
+    if payload.risk_appetite is not None:
+        try:
+            appetite = float(payload.risk_appetite)
+            drift = max(-0.4, min(0.4, appetite - 1.0))
+            proba_up = _clamp(proba_up + drift * 0.1)
+        except Exception:
+            pass
 
     # Build sMAPE string safely
     smape_parts = []

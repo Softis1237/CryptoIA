@@ -30,6 +30,7 @@ from ..reasoning.explain import explain_short
 from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
+from .investment_arbiter import InvestmentArbiter
 
 # Reuse ingestion and feature builders directly for now
 from ..data.ingest_prices import IngestPricesInput, run as run_prices
@@ -292,12 +293,23 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             base_risk = min(base_risk, float(overrides["risk_per_trade"]))
         if "leverage_cap" in overrides:
             base_leverage = min(base_leverage, float(overrides["leverage_cap"]))
+    planned_side = "LONG" if float(e4.get("y_hat", 0.0) or 0.0) >= 0 else "SHORT"
+    arbiter = InvestmentArbiter()
+    arbiter_decision = arbiter.evaluate(
+        base_proba_up=float(e4.get("proba_up", 0.5) or 0.5),
+        side=planned_side,
+        regime=str(regime.get("label")),
+        lessons=guardian_lessons,
+        risk_flags=risk_flags,
+        safe_mode=safe_mode,
+    )
+    proba_for_trade = arbiter_decision.proba_up
     tri = TradeRecommendInput(
         current_price=last_price,
         y_hat_4h=float(e4.get("y_hat", 0.0) or 0.0),
         interval_low=float((e4.get("interval") or [0.0, 0.0])[0]),
         interval_high=float((e4.get("interval") or [0.0, 0.0])[1]),
-        proba_up=float(e4.get("proba_up", 0.5) or 0.5),
+        proba_up=proba_for_trade,
         atr=atr,
         regime=str(regime.get("label")),
         account_equity=float(os.getenv("ACCOUNT_EQUITY", "1000")),
@@ -316,6 +328,20 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         interval=(tri.interval_low, tri.interval_high),
         atr=tri.atr,
     )
+    card.setdefault("reason_codes", []).append(f"arbiter:{arbiter_decision.risk_stance}")
+    if arbiter_decision.confidence_floor is not None:
+        try:
+            card["confidence"] = round(
+                max(float(card.get("confidence", 0.0)), arbiter_decision.confidence_floor),
+                2,
+            )
+        except Exception:
+            pass
+    card["arbiter"] = {
+        "success_probability": round(arbiter_decision.success_probability, 3),
+        "risk_stance": arbiter_decision.risk_stance,
+        "notes": arbiter_decision.notes,
+    }
     upsert_trade_suggestion(run_id, card)
 
     # 7) Persist explanation, memory
@@ -353,6 +379,12 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             ],
         },
         "risk_flags": risk_flags,
+        "arbiter": {
+            "proba_up": arbiter_decision.proba_up,
+            "success_probability": arbiter_decision.success_probability,
+            "risk_stance": arbiter_decision.risk_stance,
+            "notes": arbiter_decision.notes,
+        },
         "vision": vision_output,
         "synthesis": synthesis_output,
         "smc": smc_snapshot,

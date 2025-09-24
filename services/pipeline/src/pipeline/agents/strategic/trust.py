@@ -45,6 +45,19 @@ class TrustUpdate:
         )
 
 
+def _normalize_agent_name(agent: str) -> str:
+    name = agent.lower()
+    if "ensemble" in name or "ml" in name or "model" in name:
+        return "models"
+    if "vision" in name or "chart" in name:
+        return "vision"
+    if "smc" in name:
+        return "smc"
+    if "debate" in name or "arbiter" in name:
+        return "debate"
+    return name
+
+
 class TrustMonitor:
     """Высчитывает доверие на основе корреляций и кросс-валидации."""
 
@@ -118,6 +131,39 @@ class TrustMonitor:
                 )
             )
         return updates
+
+    def derive_weights_from_lessons(
+        self, lessons: Iterable[dict], regime: str | None = None
+    ) -> Dict[str, float]:
+        """Compute model weight multipliers from structured lessons."""
+
+        adjustments: Dict[str, float] = {}
+        for lesson in lessons or []:
+            payload = lesson.get("lesson") if isinstance(lesson, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            lesson_regime = str(payload.get("market_regime") or "")
+            if regime and lesson_regime and lesson_regime != regime:
+                continue
+            outcome = float(
+                payload.get("outcome_after")
+                or lesson.get("outcome_after")
+                or 0.0
+            )
+            agents = payload.get("involved_agents") or []
+            if not agents:
+                continue
+            delta = 0.05 * max(0.5, min(1.5, abs(outcome) or 1.0))
+            for agent in agents:
+                key = _normalize_agent_name(str(agent))
+                current = adjustments.get(key, 1.0)
+                if outcome < 0:
+                    current -= delta
+                elif outcome > 0:
+                    current += delta * 0.6
+                adjustments[key] = current
+
+        return {k: max(0.5, min(1.3, v)) for k, v in adjustments.items()}
 
     def _aggregate(self, base: float, popularity: float, corr: float) -> float:
         score = 0.6 * base + 0.3 * popularity + 0.1 * max(-1.0, min(1.0, corr))

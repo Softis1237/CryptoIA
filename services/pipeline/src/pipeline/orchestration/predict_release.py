@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, cast
+from typing import Any, Dict, List, cast
 
 from loguru import logger
 
@@ -35,6 +35,7 @@ from ..infra.run_lock import acquire_release_lock
 from ..models.models import ModelsInput, ModelsOutput
 from ..models.models import run as run_models
 from ..agents.memory_guardian_agent import MemoryGuardianAgent
+from ..agents.investment_arbiter import InvestmentArbiter
 from ..reasoning.debate_arbiter import debate
 from ..agents.lessons import get_relevant_lessons
 from ..reasoning.explain import explain_short
@@ -204,6 +205,88 @@ def predict_release(
     e30 = ensemble_outputs.get("30m")
     e24 = ensemble_outputs.get("24h")
 
+    guardian_lessons: List[dict] = []
+    guardian = MemoryGuardianAgent()
+    try:
+        mg = guardian.query(
+            {
+                "scope": "trading",
+                "context": {
+                    "planned_signal": "BULLISH" if e4.y_hat >= 0 else "BEARISH",
+                    "market_regime": regime.label,
+                    "probability_up": e4.proba_up,
+                },
+                "top_k": 3,
+            }
+        )
+        guardian_lessons = (
+            mg.output.get("lessons", []) if mg and isinstance(mg.output, dict) else []
+        )
+    except Exception:
+        guardian_lessons = []
+
+    arbiter = InvestmentArbiter()
+
+    # Scenarios + chart
+    with timed(durations, "scenarios"):
+        scenarios, lvls = run_scenarios_llm(
+            f_out.features_path_s3, current_price=m4.last_price, atr=m4.atr, slot=slot
+        )
+    with timed(durations, "chart_render"):
+        chart_s3 = plot_price_with_levels(
+            f_out.features_path_s3,
+            title=f"BTC {slot} — 30m/4h/12h/24h прогноз",
+            y_hat_4h=e4.y_hat,
+            y_hat_12h=e12.y_hat,
+            levels=lvls,
+            slot=slot,
+        )
+
+    # Explain / Debate (LLM if доступен)
+    news_points = [f"{s.title} ({s.source})" for s in n_out.news_signals[:3]]
+    # Feedback loop: учесть релевантные уроки из недавнего прошлого
+    lessons = []
+    try:
+        lessons = get_relevant_lessons({
+            "regime": regime.label,
+            "news": news_points,
+            "ta": {"atr": m4.atr, "interval": e4.interval},
+        })
+    except Exception:
+        lessons = []
+
+    # Optional RAG knowledge points
+    rag_points = []
+    try:
+        import os
+        if os.getenv("ENABLE_RAG", "0") in {"1", "true", "True"}:
+            from ..knowledge.loader import search as _rag_search
+
+            q = f"Regime:{regime.label}; News:{'; '.join(news_points[:3])}; Patterns:{'; '.join(e4.rationale_points[:3])}"
+            hits = _rag_search(q, k=5)
+            rag_points = [h.get("title") or (h.get("content") or "")[:80] for h in hits]
+    except Exception:
+        rag_points = []
+
+    deb_text, risk_flags = debate(
+        rationale_points=e4.rationale_points,
+        regime=regime.label,
+        news_top=news_points,
+        neighbors=neighbors,
+        lessons=guardian_lessons,
+        knowledge=rag_points,
+    )
+    expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
+
+    arbiter_decision = arbiter.evaluate(
+        base_proba_up=e4.proba_up,
+        side="LONG" if e4.y_hat >= 0 else "SHORT",
+        regime=regime.label,
+        lessons=guardian_lessons,
+        risk_flags=risk_flags,
+        safe_mode=os.getenv("SAFE_MODE", "0") in {"1", "true", "True"},
+    )
+
     # Trade recommendation (4h as primary)
     trade = run_trade(
         TradeRecommendInput(
@@ -211,7 +294,7 @@ def predict_release(
             y_hat_4h=e4.y_hat,
             interval_low=e4.interval[0],
             interval_high=e4.interval[1],
-            proba_up=e4.proba_up,
+            proba_up=arbiter_decision.proba_up,
             atr=m4.atr,
             account_equity=1000.0,
             risk_per_trade=0.005,
@@ -261,81 +344,30 @@ def predict_release(
     except Exception:
         pass
 
-    # Scenarios + chart
-    with timed(durations, "scenarios"):
-        scenarios, lvls = run_scenarios_llm(
-            f_out.features_path_s3, current_price=m4.last_price, atr=m4.atr, slot=slot
-        )
-    with timed(durations, "chart_render"):
-        chart_s3 = plot_price_with_levels(
-            f_out.features_path_s3,
-            title=f"BTC {slot} — 30m/4h/12h/24h прогноз",
-            y_hat_4h=e4.y_hat,
-            y_hat_12h=e12.y_hat,
-            levels=lvls,
-            slot=slot,
-        )
-
-    # Explain / Debate (LLM if доступен)
-    news_points = [f"{s.title} ({s.source})" for s in n_out.news_signals[:3]]
-    # Feedback loop: учесть релевантные уроки из недавнего прошлого
-    lessons = []
-    try:
-        lessons = get_relevant_lessons({
-            "regime": regime.label,
-            "news": news_points,
-            "ta": {"atr": m4.atr, "interval": e4.interval},
-        })
-    except Exception:
-        lessons = []
-
-    # Optional RAG knowledge points
-    rag_points = []
-    try:
-        import os
-        if os.getenv("ENABLE_RAG", "0") in {"1", "true", "True"}:
-            from ..knowledge.loader import search as _rag_search
-
-            q = f"Regime:{regime.label}; News:{'; '.join(news_points[:3])}; Patterns:{'; '.join(e4.rationale_points[:3])}"
-            hits = _rag_search(q, k=5)
-            rag_points = [h.get("title") or (h.get("content") or "")[:80] for h in hits]
-    except Exception:
-        rag_points = []
-
-    guardian = MemoryGuardianAgent()
-    lessons = []
-    try:
-        mg = guardian.query(
-            {
-                "scope": "trading",
-                "context": {
-                    "planned_signal": "BULLISH" if e4.y_hat >= 0 else "BEARISH",
-                    "market_regime": regime.label,
-                    "probability_up": e4.proba_up,
-                },
-                "top_k": 3,
-            }
-        )
-        lessons = mg.output.get("lessons", []) if mg and isinstance(mg.output, dict) else []
-    except Exception:
-        lessons = []
-
-    deb_text, risk_flags = debate(
-        rationale_points=e4.rationale_points,
-        regime=regime.label,
-        news_top=news_points,
-        neighbors=neighbors,
-        lessons=lessons,
-        knowledge=rag_points,
-    )
-    expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
+    if isinstance(trade.get("reason_codes"), list):
+        trade["reason_codes"].append(f"arbiter:{arbiter_decision.risk_stance}")
+    else:
+        trade["reason_codes"] = [f"arbiter:{arbiter_decision.risk_stance}"]
+    if arbiter_decision.confidence_floor is not None:
+        try:
+            trade["confidence"] = round(
+                max(float(trade.get("confidence", 0.0)), arbiter_decision.confidence_floor),
+                2,
+            )
+        except Exception:
+            pass
+    trade["arbiter"] = {
+        "success_probability": round(arbiter_decision.success_probability, 3),
+        "risk_stance": arbiter_decision.risk_stance,
+        "notes": arbiter_decision.notes,
+    }
 
     msg = []
     msg.append(f"<b>BTC Forecast — {slot}</b>")
     msg.append(f"Run: <code>{run_id}</code>")
     msg.append("")
     e4_proba_cal = calibrate_proba(
-        e4.proba_up, e4.interval, m4.last_price, m4.atr, "4h"
+        arbiter_decision.proba_up, e4.interval, m4.last_price, m4.atr, "4h"
     )
     e12_proba_cal = calibrate_proba(
         e12.proba_up, e12.interval, m4.last_price, m4.atr, "12h"
@@ -345,6 +377,9 @@ def predict_release(
     )
     msg.append(
         f"<b>12h</b>: ŷ={e12.y_hat:.2f} (p_up={e12_proba_cal:.2f} cal, interval=({e12.interval[0]:.2f}..{e12.interval[1]:.2f}))"
+    )
+    msg.append(
+        f"<b>Arbiter</b>: stance={arbiter_decision.risk_stance} (success={arbiter_decision.success_probability:.2f})"
     )
     if e30:
         price_ref = getattr(m30, "last_price", m4.last_price)

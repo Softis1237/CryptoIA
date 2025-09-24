@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cryptoia-position-guardian
+  labels:
+    app: cryptoia
+    component: guardian
+spec:
+  schedule: "*/15 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: cryptoia
+            component: guardian
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: guardian
+              image: ghcr.io/your-org/cryptoia:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "pipeline.trading.risk_loop_live"]
+              env:
+                - name: RISK_LOOP_MODE
+                  value: "guardian"
+                - name: GUARDIAN_INTERVAL_MIN
+                  value: "15"
+                - name: GUARDIAN_PROB_THRESHOLD
+                  value: "0.28"
+                - name: TELEGRAM_ALERT_CHAT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: telegram-alerts
+                      key: chat_id
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: telegram-bot
+                      key: token
+                - name: POSTGRES_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: cryptoia-postgres
+                      key: dsn
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: cryptoia-redis
+                      key: url
+                - name: TIMEZONE
+                  value: "Europe/Moscow"
