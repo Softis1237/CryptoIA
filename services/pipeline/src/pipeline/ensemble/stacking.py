@@ -11,7 +11,6 @@ non-negativity clipping + renormalization.
 """
 
 from typing import Dict, List, Tuple, Optional
-from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -19,6 +18,7 @@ import pandas as pd
 from loguru import logger
 
 from ..infra.db import fetch_predictions_for_cv
+from ..utils.horizons import horizon_to_timedelta, horizon_to_hours
 
 
 def _get_y_true_ccxt(ts_iso: str, horizon: str, provider: str = "binance") -> Optional[float]:
@@ -26,7 +26,7 @@ def _get_y_true_ccxt(ts_iso: str, horizon: str, provider: str = "binance") -> Op
         import ccxt  # type: ignore
         ex = getattr(ccxt, provider)({"enableRateLimit": True})
         ts = pd.Timestamp(ts_iso, tz="UTC").to_pydatetime()
-        ahead = ts + (timedelta(hours=4) if horizon == "4h" else timedelta(hours=12))
+        ahead = ts + horizon_to_timedelta(horizon)
         market = "BTC/USDT"
         ohlcv = ex.fetch_ohlcv(market, timeframe="1m", since=int((ahead.timestamp() - 60 * 5) * 1000), limit=10)
         if not ohlcv:
@@ -63,7 +63,8 @@ def suggest_weights(horizon: str, provider: str = "binance", min_rows: int = 30)
 
     Uses matured predictions from DB and exchange prices as ground truth.
     """
-    rows = fetch_predictions_for_cv(horizon, min_age_hours=1.0 if horizon == "1h" else (4.0 if horizon == "4h" else 12.0))
+    min_age_hours = max(1.0, horizon_to_hours(horizon))
+    rows = fetch_predictions_for_cv(horizon, min_age_hours=min_age_hours)
     if not rows:
         return {}, 0
     # Collect per-model y_hat and y_true
@@ -114,4 +115,3 @@ def combine_with_weights(preds: List[dict], weights: Dict[str, float]) -> Tuple[
     def wavg(key: str) -> float:
         return sum(float(p.get(key, 0.0)) * wmap.get(str(p.get("model")), 0.0) for p in preds)
     return wavg("y_hat"), wavg("pi_low"), wavg("pi_high"), wavg("proba_up")
-

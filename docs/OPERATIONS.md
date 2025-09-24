@@ -38,6 +38,8 @@ make analyze ARGS="price data/prices.parquet"
 - Дашборды: `ops/grafana/dashboards/pipeline_overview.json`, `ops/grafana/dashboards/agents_overview.json` и `ops/grafana/dashboards/affiliate_overview.json` (поступления/комиссии/конверсия по партнёрам).
 - Алерты: ops/prometheus/alerts.yml (Alertmanager на 9093).
 
+- Дополнительные метрики release_flow: `p_up_30m`, `p_up_30m_cal`, `interval_width_pct_30m`, `p_up_24h`, `p_up_24h_cal`, `interval_width_pct_24h`.
+
 ### Импорт дашборда Agents Overview
 
 1. Откройте Grafana → *Dashboards → Import*.

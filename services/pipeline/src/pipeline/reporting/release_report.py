@@ -13,10 +13,8 @@ def save_release_report(
     slot: str,
     regime: Dict[str, Any],
     neighbors: List[Dict[str, Any]],
-    ensemble_4h: Dict[str, Any],
-    ensemble_12h: Dict[str, Any],
-    per_model_4h: Dict[str, Any],
-    per_model_12h: Dict[str, Any],
+    ensembles: Dict[str, Dict[str, Any]],
+    per_model: Dict[str, Dict[str, Any]],
     scenarios: List[Dict[str, Any]],
     trade_card: Dict[str, Any],
     news_top: List[Dict[str, Any]],
@@ -34,8 +32,11 @@ def save_release_report(
         "regime": regime,
         "neighbors": neighbors,
         "predictions": {
-            "4h": {"ensemble": ensemble_4h, "per_model": per_model_4h},
-            "12h": {"ensemble": ensemble_12h, "per_model": per_model_12h},
+            hz: {
+                "ensemble": ensembles.get(hz, {}),
+                "per_model": per_model.get(hz, {}),
+            }
+            for hz in sorted(ensembles.keys())
         },
         "scenarios": scenarios,
         "trade_card": trade_card,

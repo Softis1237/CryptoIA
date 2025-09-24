@@ -5,6 +5,8 @@ from typing import List, Tuple, Dict, Any
 
 from pydantic import BaseModel
 
+from ..utils.horizons import horizon_to_timedelta
+
 
 class EnsembleInput(BaseModel):
     preds: List[dict]
@@ -225,12 +227,11 @@ def _bonus_from_similar_windows(
         try:
             import ccxt  # type: ignore
             import pandas as pd
-            from datetime import timedelta
             ex = getattr(ccxt, os.getenv("CCXT_PROVIDER", "binance"))(
                 {"enableRateLimit": True}
             )
             ts = pd.Timestamp(created_at_iso, tz="UTC").to_pydatetime()
-            ahead = ts + (timedelta(hours=4) if horizon == "4h" else timedelta(hours=12))
+            ahead = ts + horizon_to_timedelta(horizon)
             market = "BTC/USDT"
             ohlcv = ex.fetch_ohlcv(
                 market,

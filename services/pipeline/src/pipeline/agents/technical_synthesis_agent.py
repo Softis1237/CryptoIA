@@ -35,17 +35,26 @@ class TechnicalSynthesisAgent(BaseAgent):
     priority = 34
 
     def __init__(self) -> None:
-        cfg = fetch_agent_config("TechnicalSynthesis") or {}
-        params = cfg.get("parameters") if isinstance(cfg, dict) else None
         default = {"indicators": 1.0, "smc": 1.0, "vision": 1.0}
-        weights = {}
+        params: dict | None = None
+        try:
+            cfg = fetch_agent_config("TechnicalSynthesis") or {}
+            params = cfg.get("parameters") if isinstance(cfg, dict) else None
+        except Exception:  # noqa: BLE001
+            # База недоступна (например, локальный прогон без PostgreSQL).
+            # Используем дефолтные веса, чтобы агент оставался работоспособным.
+            params = None
+
+        weights: dict[str, float] = {}
         if isinstance(params, dict):
             weights = {
                 key: float(params.get(f"weight_{key}", default.get(key, 1.0)))
                 for key in default
             }
         self._weights = {**default, **weights}
-        self._record_metrics = params.get("record_metrics", True) if isinstance(params, dict) else True
+        self._record_metrics = (
+            params.get("record_metrics", True) if isinstance(params, dict) else True
+        )
 
     def run(self, payload: dict) -> AgentResult:
         params = TechnicalSynthesisPayload(**payload)

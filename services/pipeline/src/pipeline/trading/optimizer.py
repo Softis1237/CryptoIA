@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
+from ..utils.horizons import horizon_to_minutes, minutes_to_horizon
 
 
 @dataclass
@@ -12,6 +14,24 @@ class Signal:
     rr: float        # expected risk:reward
     atr: float
     price: float
+
+
+@dataclass
+class AdaptiveRiskProfile:
+    horizon_minutes: int
+    horizon_label: str
+    sl_atr_multiplier: float
+    rr_target: float
+    leverage_factor: float
+    risk_multiplier: float
+    valid_minutes: int
+    hold_minutes: int
+    notes: List[str]
+
+    def sl_tp_distances(self, atr: float) -> tuple[float, float]:
+        sl_dist = float(self.sl_atr_multiplier * atr)
+        tp_dist = float(self.rr_target * sl_dist)
+        return sl_dist, tp_dist
 
 
 def kelly_fraction(p: float, b: float) -> float:
@@ -38,4 +58,3 @@ def allocate_across_signals(signals: List[Signal], equity: float, risk_per_trade
     scores = [kelly_fraction(s.proba_up, s.rr) for s in top]
     total = sum(scores) or 1.0
     return {s.name: v / total for s, v in zip(top, scores)}
-

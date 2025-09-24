@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import cast
+from typing import Any, Dict, cast
 
 from loguru import logger
 
@@ -15,7 +15,7 @@ from ..data.ingest_orderbook import IngestOrderbookInput
 from ..data.ingest_orderbook import run as run_orderbook
 from ..data.ingest_prices import IngestPricesInput
 from ..data.ingest_prices import run as run_prices
-from ..ensemble.ensemble_rank import EnsembleInput
+from ..ensemble.ensemble_rank import EnsembleInput, EnsembleOutput
 from ..ensemble.ensemble_rank import run as run_ensemble
 from ..features.features_calc import FeaturesCalcInput
 from ..features.features_calc import run as run_features
@@ -32,7 +32,7 @@ from ..infra.db import (
 from ..infra.metrics import push_durations, push_values, timed
 from ..infra.obs import init_sentry
 from ..infra.run_lock import acquire_release_lock
-from ..models.models import ModelsInput
+from ..models.models import ModelsInput, ModelsOutput
 from ..models.models import run as run_models
 from ..agents.memory_guardian_agent import MemoryGuardianAgent
 from ..reasoning.debate_arbiter import debate
@@ -171,30 +171,38 @@ def predict_release(
     except Exception:
         neighbors = []
 
-    # Models 4h / 12h
-    with timed(durations, "models_4h"):
-        m4 = run_models(
-            ModelsInput(
-                features_path_s3=f_out.features_path_s3,
-                horizon_minutes=horizon_hours_4h * 60,
+    forecast_specs = [
+        ("30m", 30),
+        ("4h", horizon_hours_4h * 60),
+        ("12h", horizon_hours_12h * 60),
+        ("24h", 24 * 60),
+    ]
+    model_outputs: Dict[str, ModelsOutput] = {}
+    ensemble_outputs: Dict[str, EnsembleOutput] = {}
+    for hz, minutes in forecast_specs:
+        with timed(durations, f"models_{hz}"):
+            model_outputs[hz] = run_models(
+                ModelsInput(
+                    features_path_s3=f_out.features_path_s3,
+                    horizon_minutes=minutes,
+                )
             )
-        )
-    with timed(durations, "models_12h"):
-        m12 = run_models(
-            ModelsInput(
-                features_path_s3=f_out.features_path_s3,
-                horizon_minutes=horizon_hours_12h * 60,
+        with timed(durations, f"ensemble_{hz}"):
+            ensemble_outputs[hz] = run_ensemble(
+                EnsembleInput(
+                    preds=[p.model_dump() for p in model_outputs[hz].preds],
+                    horizon=hz,
+                )
             )
-        )
 
-    with timed(durations, "ensemble_4h"):
-        e4 = run_ensemble(
-            EnsembleInput(preds=[p.model_dump() for p in m4.preds], horizon="4h")
-        )
-    with timed(durations, "ensemble_12h"):
-        e12 = run_ensemble(
-            EnsembleInput(preds=[p.model_dump() for p in m12.preds], horizon="12h")
-        )
+    m4 = model_outputs["4h"]
+    m12 = model_outputs["12h"]
+    m30 = model_outputs.get("30m")
+    m24 = model_outputs.get("24h")
+    e4 = ensemble_outputs["4h"]
+    e12 = ensemble_outputs["12h"]
+    e30 = ensemble_outputs.get("30m")
+    e24 = ensemble_outputs.get("24h")
 
     # Trade recommendation (4h as primary)
     trade = run_trade(
@@ -261,7 +269,7 @@ def predict_release(
     with timed(durations, "chart_render"):
         chart_s3 = plot_price_with_levels(
             f_out.features_path_s3,
-            title=f"BTC {slot} — 4h/12h прогноз",
+            title=f"BTC {slot} — 30m/4h/12h/24h прогноз",
             y_hat_4h=e4.y_hat,
             y_hat_12h=e12.y_hat,
             levels=lvls,
@@ -338,6 +346,32 @@ def predict_release(
     msg.append(
         f"<b>12h</b>: ŷ={e12.y_hat:.2f} (p_up={e12_proba_cal:.2f} cal, interval=({e12.interval[0]:.2f}..{e12.interval[1]:.2f}))"
     )
+    if e30:
+        price_ref = getattr(m30, "last_price", m4.last_price)
+        atr_ref = getattr(m30, "atr", m4.atr)
+        e30_proba_cal = calibrate_proba(
+            e30.proba_up,
+            e30.interval,
+            price_ref,
+            atr_ref,
+            "30m",
+        )
+        msg.append(
+            f"<b>30m</b>: ŷ={e30.y_hat:.2f} (p_up={e30_proba_cal:.2f} cal, interval=({e30.interval[0]:.2f}..{e30.interval[1]:.2f}))"
+        )
+    if e24:
+        price_ref = getattr(m24, "last_price", m4.last_price)
+        atr_ref = getattr(m24, "atr", m4.atr)
+        e24_proba_cal = calibrate_proba(
+            e24.proba_up,
+            e24.interval,
+            price_ref,
+            atr_ref,
+            "24h",
+        )
+        msg.append(
+            f"<b>24h</b>: ŷ={e24.y_hat:.2f} (p_up={e24_proba_cal:.2f} cal, interval=({e24.interval[0]:.2f}..{e24.interval[1]:.2f}))"
+        )
     msg.append("")
     msg.append(
         f"<b>Режим рынка</b>: {regime.label} (conf={regime.confidence:.2f}, vol≈{regime.features.get('vol_pct', 0):.2f}%)"
@@ -404,47 +438,33 @@ def predict_release(
 
     # Persist predictions and scenarios (best-effort)
     try:
-        per_model_4h = {
-            p.model: {
-                "y_hat": p.y_hat,
-                "pi_low": p.pi_low,
-                "pi_high": p.pi_high,
-                "proba_up": p.proba_up,
-                "cv": p.cv_metrics,
+        per_model_dict: Dict[str, Dict[str, Any]] = {}
+        for hz, model_out in model_outputs.items():
+            per_model_dict[hz] = {
+                p.model: {
+                    "y_hat": p.y_hat,
+                    "pi_low": p.pi_low,
+                    "pi_high": p.pi_high,
+                    "proba_up": p.proba_up,
+                    "cv": p.cv_metrics,
+                }
+                for p in model_out.preds
             }
-            for p in m4.preds
-        }
-        per_model_12h = {
-            p.model: {
-                "y_hat": p.y_hat,
-                "pi_low": p.pi_low,
-                "pi_high": p.pi_high,
-                "proba_up": p.proba_up,
-                "cv": p.cv_metrics,
-            }
-            for p in m12.preds
-        }
-        upsert_prediction(
-            run_id,
-            "4h",
-            e4.y_hat,
-            e4.interval[0],
-            e4.interval[1],
-            e4.proba_up,
-            per_model_4h,
-        )
-        upsert_prediction(
-            run_id,
-            "12h",
-            e12.y_hat,
-            e12.interval[0],
-            e12.interval[1],
-            e12.proba_up,
-            per_model_12h,
-        )
-        upsert_ensemble_weights(
-            run_id, e4.weights | {f"12h:{k}": v for k, v in e12.weights.items()}
-        )
+        for hz, ens in ensemble_outputs.items():
+            per_model_payload = per_model_dict.get(hz, {})
+            upsert_prediction(
+                run_id,
+                hz,
+                ens.y_hat,
+                ens.interval[0],
+                ens.interval[1],
+                ens.proba_up,
+                per_model_payload,
+            )
+        weights_payload = {}
+        for hz, ens in ensemble_outputs.items():
+            weights_payload.update({f"{hz}:{m}": float(v) for m, v in ens.weights.items()})
+        upsert_ensemble_weights(run_id, weights_payload)
         upsert_scenarios(run_id, scenarios, chart_s3)
         # Save explanation/debate
         md = "<b>Почему так</b>\n" + expl_text + "\n\n<b>Арбитраж</b>\n" + deb_text
@@ -473,20 +493,16 @@ def predict_release(
                 **regime.features,
             },
             neighbors=neighbors,
-            ensemble_4h={
-                "y_hat": e4.y_hat,
-                "proba_up": e4.proba_up,
-                "interval": e4.interval,
-                "weights": e4.weights,
+            ensembles={
+                hz: {
+                    "y_hat": ens.y_hat,
+                    "proba_up": ens.proba_up,
+                    "interval": ens.interval,
+                    "weights": ens.weights,
+                }
+                for hz, ens in ensemble_outputs.items()
             },
-            ensemble_12h={
-                "y_hat": e12.y_hat,
-                "proba_up": e12.proba_up,
-                "interval": e12.interval,
-                "weights": e12.weights,
-            },
-            per_model_4h=per_model_4h,
-            per_model_12h=per_model_12h,
+            per_model=per_model_dict,
             scenarios=scenarios,
             trade_card=trade,
             news_top=news_export,
@@ -502,18 +518,14 @@ def predict_release(
     # Per-model metrics
     try:
         per_model_vals = {}
-        for p in m4.preds:
-            if isinstance(p.cv_metrics, dict):
+        for hz, model_out in model_outputs.items():
+            for p in model_out.preds:
+                if not isinstance(p.cv_metrics, dict):
+                    continue
                 if "smape" in p.cv_metrics:
-                    per_model_vals[f"smape_4h_{p.model}"] = float(p.cv_metrics["smape"])  # type: ignore[assignment]
+                    per_model_vals[f"smape_{hz}_{p.model}"] = float(p.cv_metrics["smape"])  # type: ignore[assignment]
                 if "da" in p.cv_metrics:
-                    per_model_vals[f"da_4h_{p.model}"] = float(p.cv_metrics["da"])  # type: ignore[assignment]
-        for p in m12.preds:
-            if isinstance(p.cv_metrics, dict):
-                if "smape" in p.cv_metrics:
-                    per_model_vals[f"smape_12h_{p.model}"] = float(p.cv_metrics["smape"])  # type: ignore[assignment]
-                if "da" in p.cv_metrics:
-                    per_model_vals[f"da_12h_{p.model}"] = float(p.cv_metrics["da"])  # type: ignore[assignment]
+                    per_model_vals[f"da_{hz}_{p.model}"] = float(p.cv_metrics["da"])  # type: ignore[assignment]
         if per_model_vals:
             push_values(
                 job="predict_release", values=per_model_vals, labels={"slot": slot}

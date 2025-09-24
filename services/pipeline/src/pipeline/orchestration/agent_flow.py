@@ -106,6 +106,31 @@ except ImportError:  # pragma: no cover
     IngestAltDataInput = None  # type: ignore[assignment]
     run_altdata = None  # type: ignore[assignment]
 
+_OFFLINE_MODE = os.getenv("OFFLINE_MODE", "0") in {"1", "true", "True"}
+
+if _OFFLINE_MODE:
+
+    def _noop(*_args, **_kwargs):  # type: ignore
+        return None
+
+    fetch_model_trust_regime = lambda *args, **kwargs: {}  # type: ignore
+    fetch_predictions_for_cv = lambda *args, **kwargs: []  # type: ignore
+    fetch_recent_predictions = lambda *args, **kwargs: []  # type: ignore
+    fetch_user_insights_recent = lambda *args, **kwargs: []  # type: ignore
+    get_data_source_trust = lambda *args, **kwargs: None  # type: ignore
+    insert_agent_metric = _noop  # type: ignore
+    insert_backtest_result = _noop  # type: ignore
+    upsert_agent_prediction = _noop  # type: ignore
+    upsert_ensemble_weights = _noop  # type: ignore
+    upsert_explanations = _noop  # type: ignore
+    upsert_features_snapshot = _noop  # type: ignore
+    upsert_prediction = _noop  # type: ignore
+    upsert_regime = _noop  # type: ignore
+    upsert_scenarios = _noop  # type: ignore
+    upsert_similar_windows = _noop  # type: ignore
+    upsert_trade_suggestion = _noop  # type: ignore
+    upsert_validation_report = _noop  # type: ignore
+
 # Lightweight agent wrappers -------------------------------------------------
 
 
@@ -159,6 +184,25 @@ def _indicator_snapshot(features_path: str) -> Dict[str, float]:
         }
     except Exception:
         return {}
+
+
+def _safe_get_data_source_trust(name: str) -> float | None:
+    try:
+        return get_data_source_trust(name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"get_data_source_trust fallback for {name}: {exc}")
+        return None
+
+
+def _safe_db_call(func, *args, **kwargs):
+    offline = os.getenv("OFFLINE_MODE", "0") in {"1", "true", "True"}
+    if offline:
+        return None
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"DB call {getattr(func, '__name__', str(func))} skipped: {exc}")
+        return None
 
 
 class PricesAgent:
@@ -1815,6 +1859,21 @@ def run_release_flow(
     co.register(
         ContrarianAgent(), depends_on=["futures", "sentiment_index"]
     )  # funding + sentiment (regime-aware later)
+    forecast_specs: list[tuple[str, int]] = [
+        ("30m", 30),
+        ("4h", horizon_hours_4h * 60),
+        ("12h", horizon_hours_12h * 60),
+        ("24h", 24 * 60),
+    ]
+    for hz, minutes in forecast_specs:
+        agent_name = f"models_{hz}"
+        co.register(
+            ModelsAgent(agent_name, horizon_minutes=minutes), depends_on=["features"]
+        )
+        co.register(
+            EnsembleAgent(f"ensemble_{hz}"), depends_on=[agent_name]
+        )
+
     co.register(
         LLMForecastAgent(), depends_on=["models_4h", "regime"]
     )  # optional LLM forecast
@@ -1823,20 +1882,6 @@ def run_release_flow(
     co.register(
         EventStudyAgent(), depends_on=["news"]
     )  # event study on high-impact facts
-    co.register(
-        ModelsAgent("models_4h", horizon_minutes=horizon_hours_4h * 60),
-        depends_on=["features"],
-    )  # 4h
-    co.register(
-        ModelsAgent("models_12h", horizon_minutes=horizon_hours_12h * 60),
-        depends_on=["features"],
-    )  # 12h
-    co.register(
-        EnsembleAgent("ensemble_4h"), depends_on=["models_4h"]
-    )  # ensemble over model preds
-    co.register(
-        EnsembleAgent("ensemble_12h"), depends_on=["models_12h"]
-    )  # ensemble 12h
     co.register(
         ModelTrustAgent(), depends_on=["models_4h", "models_12h"]
     )  # suggest weights
@@ -1966,9 +2011,9 @@ def run_release_flow(
             src_name = ""
         if not src_name or src_name in source_trust:
             continue
-        trust_val = get_data_source_trust(src_name)
+        trust_val = _safe_get_data_source_trust(src_name)
         if trust_val is None and sig.get("provider"):
-            trust_val = get_data_source_trust(str(sig.get("provider")))
+            trust_val = _safe_get_data_source_trust(str(sig.get("provider")))
         if trust_val is not None:
             source_trust[src_name] = float(trust_val)
     news_facts = [f for f in (getattr(news_out, "news_facts", []) or [])]
@@ -2017,14 +2062,10 @@ def run_release_flow(
 
     # Enrich payloads for downstream agents now that we know features
     # Re-run dependent agents only: features, regime, similar, models, ensembles, scenarios, chart, trade
-    for name in [
-        "features",
-        "regime",
-        "similar_past",
-        "models_4h",
-        "models_12h",
-        "ensemble_4h",
-        "ensemble_12h",
+    timed_agents = ["features", "regime", "similar_past"]
+    timed_agents += [f"models_{hz}" for hz, _ in forecast_specs]
+    timed_agents += [f"ensemble_{hz}" for hz, _ in forecast_specs]
+    timed_agents += [
         "scenarios",
         "chart",
         "chart_vision",
@@ -2032,21 +2073,20 @@ def run_release_flow(
         "trade",
         "risk_policy",
         "backtest_validator",
-    ]:
+    ]
+    for name in timed_agents:
         durations[name] = 0.0  # initialize
 
     # features
     with timed(durations, "features"):
         results["features"] = co._agents["features"].run(payloads["features"])  # type: ignore[attr-defined]
     f_out = results["features"].output
-    try:
-        upsert_features_snapshot(
-            ctx.run_id,
-            getattr(f_out, "snapshot_ts", datetime.now(timezone.utc).isoformat()),
-            getattr(f_out, "features_path_s3", ""),
-        )
-    except Exception:
-        logger.exception("Failed to upsert features snapshot")
+    _safe_db_call(
+        upsert_features_snapshot,
+        ctx.run_id,
+        getattr(f_out, "snapshot_ts", datetime.now(timezone.utc).isoformat()),
+        getattr(f_out, "features_path_s3", ""),
+    )
 
     # regime
     with timed(durations, "regime"):
@@ -2056,15 +2096,13 @@ def run_release_flow(
         "confidence": 0.5,
         "features": {},
     }
-    try:
-        upsert_regime(
-            ctx.run_id,
-            regime["label"],
-            float(regime["confidence"]),
-            regime.get("features", {}),
-        )
-    except Exception:
-        logger.exception("Failed to upsert regime")
+    _safe_db_call(
+        upsert_regime,
+        ctx.run_id,
+        regime["label"],
+        float(regime["confidence"]),
+        regime.get("features", {}),
+    )
 
     # backtest validator (simple breakout on features)
     try:
@@ -2079,17 +2117,17 @@ def run_release_flow(
     with timed(durations, "similar_past"):
         results["similar_past"] = co._agents["similar_past"].run({"features_path_s3": getattr(f_out, "features_path_s3", ""), "symbol": "BTCUSDT", "k": 5})  # type: ignore[attr-defined]
     neighbors = results["similar_past"].output or []
-    try:
-        upsert_similar_windows(ctx.run_id, neighbors)
-    except Exception:
-        logger.exception("Failed to upsert similar windows")
+    _safe_db_call(upsert_similar_windows, ctx.run_id, neighbors)
 
     # sentiment quality (from news)
     try:
         sq_payload = {"news_signals": news_list}
         results["sentiment_quality"] = co._agents["sentiment_quality"].run(sq_payload)  # type: ignore[attr-defined]
-        upsert_agent_prediction(
-            "sentiment_quality", ctx.run_id, results["sentiment_quality"].output or {}
+        _safe_db_call(
+            upsert_agent_prediction,
+            "sentiment_quality",
+            ctx.run_id,
+            results["sentiment_quality"].output or {},
         )
     except Exception:
         logger.exception("Failed to process sentiment_quality agent")
@@ -2098,20 +2136,27 @@ def run_release_flow(
     try:
         si_payload = {"news_signals": news_list, "social_signals": social_list}
         results["sentiment_index"] = co._agents["sentiment_index"].run(si_payload)  # type: ignore[attr-defined]
-        upsert_agent_prediction(
-            "sentiment_index", ctx.run_id, results["sentiment_index"].output or {}
+        _safe_db_call(
+            upsert_agent_prediction,
+            "sentiment_index",
+            ctx.run_id,
+            results["sentiment_index"].output or {},
         )
     except Exception:
         logger.exception("Failed to process sentiment_index agent")
 
-    # models 4h/12h
-    with timed(durations, "models_4h"):
-        results["models_4h"] = co._agents["models_4h"].run({"features_path_s3": getattr(f_out, "features_path_s3", "")})  # type: ignore[attr-defined]
-    with timed(durations, "models_12h"):
-        results["models_12h"] = co._agents["models_12h"].run({"features_path_s3": getattr(f_out, "features_path_s3", "")})  # type: ignore[attr-defined]
+    # models for each horizon
+    model_outputs: Dict[str, Any] = {}
+    for hz, _minutes in forecast_specs:
+        agent_name = f"models_{hz}"
+        with timed(durations, agent_name):
+            results[agent_name] = co._agents[agent_name].run(
+                {"features_path_s3": getattr(f_out, "features_path_s3", "")}
+            )  # type: ignore[attr-defined]
+        model_outputs[hz] = results[agent_name].output
 
-    m4 = results["models_4h"].output
-    m12 = results["models_12h"].output
+    m4 = model_outputs.get("4h")
+    m12 = model_outputs.get("12h")
 
     # Compute news context (normalized 0..1)
     def _parse_ts(s: str):
@@ -2256,18 +2301,43 @@ def run_release_flow(
     except Exception:
         trust4 = {}
         trust12 = {}
-    with timed(durations, "ensemble_4h"):
-        preds_payload_4h = [p.model_dump() for p in getattr(m4, "preds", [])]
-        if llm_pred4:
-            preds_payload_4h.append(llm_pred4)
-        results["ensemble_4h"] = co._agents["ensemble_4h"].run({"preds": preds_payload_4h, "trust_weights": trust4, "horizon": "4h", "neighbors": neighbors})  # type: ignore[attr-defined]
-    with timed(durations, "ensemble_12h"):
-        preds_payload_12h = [p.model_dump() for p in getattr(m12, "preds", [])]
-        if llm_pred12:
-            preds_payload_12h.append(llm_pred12)
-        results["ensemble_12h"] = co._agents["ensemble_12h"].run({"preds": preds_payload_12h, "trust_weights": trust12, "horizon": "12h", "neighbors": neighbors})  # type: ignore[attr-defined]
-    e4 = results["ensemble_4h"].output
-    e12 = results["ensemble_12h"].output
+    trust_map = {"4h": trust4, "12h": trust12}
+    ensemble_outputs: Dict[str, Any] = {}
+    for hz, _minutes in forecast_specs:
+        agent_name = f"ensemble_{hz}"
+        preds_payload = [
+            p.model_dump() for p in getattr(model_outputs.get(hz), "preds", [])
+        ]
+        if hz == "4h" and llm_pred4:
+            preds_payload.append(llm_pred4)
+        if hz == "12h" and llm_pred12:
+            preds_payload.append(llm_pred12)
+        if not preds_payload:
+            continue
+        with timed(durations, agent_name):
+            results[agent_name] = co._agents[agent_name].run(
+                {
+                    "preds": preds_payload,
+                    "trust_weights": trust_map.get(hz, {}),
+                    "horizon": hz,
+                    "neighbors": neighbors,
+                }
+            )  # type: ignore[attr-defined]
+        ensemble_outputs[hz] = results[agent_name].output
+        _safe_db_call(
+            upsert_prediction,
+            ctx.run_id,
+            hz,
+            float(getattr(ensemble_outputs[hz], "y_hat", 0.0) or 0.0),
+            float((getattr(ensemble_outputs[hz], "interval", [0.0, 0.0]) or [0.0, 0.0])[0]),
+            float((getattr(ensemble_outputs[hz], "interval", [0.0, 0.0]) or [0.0, 0.0])[1]),
+            float(getattr(ensemble_outputs[hz], "proba_up", 0.0) or 0.0),
+            getattr(model_outputs.get(hz), "preds", []),
+        )
+    e4 = ensemble_outputs.get("4h") or {}
+    e12 = ensemble_outputs.get("12h") or {}
+    e30 = ensemble_outputs.get("30m") or {}
+    e24 = ensemble_outputs.get("24h") or {}
 
     # Run contrarian with regime context (regime-aware thresholds)
     try:
@@ -2841,12 +2911,14 @@ def run_release_flow(
         e12_raw = float(getattr(e12, "proba_up", 0.5))
         e4_iso = _calib(e4_raw, "4h")
         e12_iso = _calib(e12_raw, "12h")
+        atr_ref = float(getattr(m4, "atr", 0.0))
+        price_ref = float(getattr(m4, "last_price", 0.0))
         e4_proba_cal = (
             calibrate_proba_by_uncertainty(
                 e4_raw,
                 getattr(e4, "interval", [0.0, 0.0]),
-                getattr(m4, "last_price", 0.0),
-                getattr(m4, "atr", 0.0),
+                price_ref,
+                atr_ref,
             )
             if e4_iso == e4_raw
             else e4_iso
@@ -2855,12 +2927,44 @@ def run_release_flow(
             calibrate_proba_by_uncertainty(
                 e12_raw,
                 getattr(e12, "interval", [0.0, 0.0]),
-                getattr(m4, "last_price", 0.0),
-                getattr(m4, "atr", 0.0),
+                price_ref,
+                atr_ref,
             )
             if e12_iso == e12_raw
             else e12_iso
         )
+        e30_proba_cal = None
+        if e30:
+            e30_raw = float(getattr(e30, "proba_up", 0.5))
+            e30_iso = _calib(e30_raw, "30m")
+            atr_30 = float(getattr(model_outputs.get("30m"), "atr", atr_ref))
+            price_30 = float(getattr(model_outputs.get("30m"), "last_price", price_ref))
+            e30_proba_cal = (
+                calibrate_proba_by_uncertainty(
+                    e30_raw,
+                    getattr(e30, "interval", [0.0, 0.0]),
+                    price_30,
+                    atr_30,
+                )
+                if e30_iso == e30_raw
+                else e30_iso
+            )
+        e24_proba_cal = None
+        if e24:
+            e24_raw = float(getattr(e24, "proba_up", 0.5))
+            e24_iso = _calib(e24_raw, "24h")
+            atr_24 = float(getattr(model_outputs.get("24h"), "atr", atr_ref))
+            price_24 = float(getattr(model_outputs.get("24h"), "last_price", price_ref))
+            e24_proba_cal = (
+                calibrate_proba_by_uncertainty(
+                    e24_raw,
+                    getattr(e24, "interval", [0.0, 0.0]),
+                    price_24,
+                    atr_24,
+                )
+                if e24_iso == e24_raw
+                else e24_iso
+            )
 
         # Sentiment / risk quick factors
         si = results.get("sentiment_index").output or {}
@@ -2905,15 +3009,27 @@ def run_release_flow(
         # Price ranges
         i4 = getattr(e4, "interval", [0.0, 0.0])
         i12 = getattr(e12, "interval", [0.0, 0.0])
+        i30 = getattr(e30, "interval", [0.0, 0.0]) if e30 else None
+        i24 = getattr(e24, "interval", [0.0, 0.0]) if e24 else None
 
         msg = []
         msg.append(f"<b>BTC Forecast — {ctx.slot}</b>")
         msg.append(f"Run: <code>{ctx.run_id}</code>")
-        msg.append(
-            f"Price ranges: 4h=({i4[0]:.2f}..{i4[1]:.2f}), 12h=({i12[0]:.2f}..{i12[1]:.2f})"
-        )
+        price_parts = []
+        if i30:
+            price_parts.append(f"30m=({i30[0]:.2f}..{i30[1]:.2f})")
+        price_parts.append(f"4h=({i4[0]:.2f}..{i4[1]:.2f})")
+        price_parts.append(f"12h=({i12[0]:.2f}..{i12[1]:.2f})")
+        if i24:
+            price_parts.append(f"24h=({i24[0]:.2f}..{i24[1]:.2f})")
+        msg.append("Price ranges: " + ", ".join(price_parts))
         msg.append(f"Scenario: {sc_line}")
-        msg.append(f"P(up): 4h={e4_proba_cal:.2f}, 12h={e12_proba_cal:.2f}")
+        proba_parts = [f"4h={e4_proba_cal:.2f}", f"12h={e12_proba_cal:.2f}"]
+        if e30_proba_cal is not None:
+            proba_parts.insert(0, f"30m={e30_proba_cal:.2f}")
+        if e24_proba_cal is not None:
+            proba_parts.append(f"24h={e24_proba_cal:.2f}")
+        msg.append("P(up): " + ", ".join(proba_parts))
         msg.append(
             f"Factors: news_idx={float(si.get('index', 0.0)):.2f}; risk={risk_level} (VaR95≈{var95:.3f})"
         )
@@ -2936,49 +3052,35 @@ def run_release_flow(
 
     # Persist predictions/scenarios/explanations best-effort
     try:
-        per_model_4h = {
-            p.model: {
-                "y_hat": p.y_hat,
-                "pi_low": p.pi_low,
-                "pi_high": p.pi_high,
-                "proba_up": p.proba_up,
-                "cv": p.cv_metrics,
+        per_model_dict = {
+            hz: {
+                p.model: {
+                    "y_hat": p.y_hat,
+                    "pi_low": p.pi_low,
+                    "pi_high": p.pi_high,
+                    "proba_up": p.proba_up,
+                    "cv": p.cv_metrics,
+                }
+                for p in getattr(model_outputs.get(hz), "preds", [])
             }
-            for p in getattr(m4, "preds", [])
+            for hz, _ in forecast_specs
         }
-        per_model_12h = {
-            p.model: {
-                "y_hat": p.y_hat,
-                "pi_low": p.pi_low,
-                "pi_high": p.pi_high,
-                "proba_up": p.proba_up,
-                "cv": p.cv_metrics,
-            }
-            for p in getattr(m12, "preds", [])
-        }
-        upsert_prediction(
-            ctx.run_id,
-            "4h",
-            getattr(e4, "y_hat", 0.0),
-            getattr(e4, "interval", [0.0, 0.0])[0],
-            getattr(e4, "interval", [0.0, 0.0])[1],
-            getattr(e4, "proba_up", 0.5),
-            per_model_4h,
-        )
-        upsert_prediction(
-            ctx.run_id,
-            "12h",
-            getattr(e12, "y_hat", 0.0),
-            getattr(e12, "interval", [0.0, 0.0])[0],
-            getattr(e12, "interval", [0.0, 0.0])[1],
-            getattr(e12, "proba_up", 0.5),
-            per_model_12h,
-        )
-        upsert_ensemble_weights(
-            ctx.run_id,
-            getattr(e4, "weights", {})
-            | {f"12h:{k}": v for k, v in getattr(e12, "weights", {}).items()},
-        )
+        weights_payload = {}
+        for hz, ens in ensemble_outputs.items():
+            _safe_db_call(
+                upsert_prediction,
+                ctx.run_id,
+                hz,
+                getattr(ens, "y_hat", 0.0),
+                getattr(ens, "interval", [0.0, 0.0])[0],
+                getattr(ens, "interval", [0.0, 0.0])[1],
+                getattr(ens, "proba_up", 0.5),
+                per_model_dict.get(hz, {}),
+            )
+            weights_payload.update(
+                {f"{hz}:{m}": float(w) for m, w in getattr(ens, "weights", {}).items()}
+            )
+        upsert_ensemble_weights(ctx.run_id, weights_payload)
         upsert_scenarios(ctx.run_id, sc_pack.get("scenarios", []), chart_s3)
         # A/B challenger save as agent results
         try:
@@ -2987,10 +3089,7 @@ def run_release_flow(
             if ch12:
                 upsert_agent_prediction("ensemble_12h_ch", ctx.run_id, ch12)
         except Exception:
-
             logger.exception("Failed to upsert challenger ensemble results")
-
-            logger.exception("Failed to save challenger ensemble predictions")
 
         # Build improved explanation (Pro)
         try:
@@ -3006,9 +3105,9 @@ def run_release_flow(
         md = (
             "<b>Почему так</b>\n"
             + expl_text
-            + "\n\n<b>Арбитраж</b>\n"
+            + "\n\н<b>Арбитраж</b>\n"
             + deb_text
-            + "\n\n<b>Контекст</b>\n"
+            + "\н\н<b>Контекст</b>\n"
             f"Сентимент: idx={si.get('index',0):.2f} (news={si.get('news_component',0):.2f}, social={si.get('social_component',0):.2f})\n"
             f"Ликвидность: {liq.get('level','n/a')} (24h≈{liq.get('liq_24h_usd',0):.0f}$, slip≈{liq.get('slip_bps',0):.1f}bps)\n"
             f"Опционы: PC={be.get('put_call_ratio','n/a')} OI≈{be.get('open_interest','n/a')} риск={be.get('risk_appetite','n/a')}\n"
@@ -3023,10 +3122,7 @@ def run_release_flow(
         upsert_explanations(ctx.run_id, md, risk_flags)
         upsert_trade_suggestion(ctx.run_id, card)
     except Exception:
-
-        logger.exception("Failed to persist explanation or trade suggestion")
-
-        logger.exception("Failed to persist explanations or trade suggestion")
+        logger.exception("Failed to persist run artefacts")
 
     # metrics
     push_durations(job="release_flow", durations=durations, labels={"slot": ctx.slot})
@@ -3055,6 +3151,26 @@ def run_release_flow(
                 max(0.0, min(1.0, news_ctx)) if "news_ctx" in locals() else 0.0
             ),
         }
+        if e30:
+            business["p_up_30m"] = float(getattr(e30, "proba_up", 0.5))
+            if e30_proba_cal is not None:
+                business["p_up_30m_cal"] = float(e30_proba_cal)
+            width_30 = (
+                getattr(e30, "interval", [0.0, 0.0])[1]
+                - getattr(e30, "interval", [0.0, 0.0])[0]
+            )
+            price_30 = float(getattr(model_outputs.get("30m"), "last_price", getattr(m4, "last_price", 0.0)))
+            business["interval_width_pct_30m"] = float(width_30 / max(1e-6, price_30))
+        if e24:
+            business["p_up_24h"] = float(getattr(e24, "proba_up", 0.5))
+            if e24_proba_cal is not None:
+                business["p_up_24h_cal"] = float(e24_proba_cal)
+            width_24 = (
+                getattr(e24, "interval", [0.0, 0.0])[1]
+                - getattr(e24, "interval", [0.0, 0.0])[0]
+            )
+            price_24 = float(getattr(model_outputs.get("24h"), "last_price", getattr(m4, "last_price", 0.0)))
+            business["interval_width_pct_24h"] = float(width_24 / max(1e-6, price_24))
         # Risk metrics from RiskEstimatorAgent
         try:
             rm = (
@@ -3135,6 +3251,28 @@ def run_release_flow(
 
             logger.exception("Failed to push ensemble weights for 12h")
 
+        try:
+            w30 = getattr(e30, "weights", {}) or {}
+            if w30:
+                push_values(
+                    job="ensemble",
+                    values={f"ensemble_weight_{m}": float(v) for m, v in w30.items()},
+                    labels={"horizon": "30m"},
+                )
+        except Exception:
+            logger.exception("Failed to push ensemble weights for 30m")
+
+        try:
+            w24 = getattr(e24, "weights", {}) or {}
+            if w24:
+                push_values(
+                    job="ensemble",
+                    values={f"ensemble_weight_{m}": float(v) for m, v in w24.items()},
+                    labels={"horizon": "24h"},
+                )
+        except Exception:
+            logger.exception("Failed to push ensemble weights for 24h")
+
     except Exception:
         logger.exception("Failed to push business metrics")
 
@@ -3169,6 +3307,18 @@ def run_release_flow(
             },
             "risk_flags": risk_flags if isinstance(risk_flags, list) else [],
         }
+        if e30:
+            final_summary["e30m"] = {
+                "y_hat": float(getattr(e30, "y_hat", 0.0)),
+                "proba_up": float(getattr(e30, "proba_up", 0.0)),
+                "interval": list(getattr(e30, "interval", [0.0, 0.0])),
+            }
+        if e24:
+            final_summary["e24h"] = {
+                "y_hat": float(getattr(e24, "y_hat", 0.0)),
+                "proba_up": float(getattr(e24, "proba_up", 0.0)),
+                "interval": list(getattr(e24, "interval", [0.0, 0.0])),
+            }
         _ins_rs(ctx.run_id, final_summary, None)
     except Exception:
         logger.exception("Failed to insert run summary")

@@ -44,6 +44,11 @@ from ..agents.alpha_hunter import (
     match_strategies_on_features as _alpha_match,
     AlphaMatchResult,
 )
+from ..utils.horizons import (
+    default_forecast_horizons,
+    horizon_to_minutes,
+    minutes_to_horizon,
+)
 
 
 @dataclass
@@ -259,71 +264,157 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     )
     neighbors = call_tool("run_similarity_search", {"features_s3": features_s3}) or {}
     topk = neighbors.get("topk") or []
-    hmin = _horizon_for(trigger)
-    hz = f"{hmin}m"
-    # Trust weights (regime-based; optionally event-based for NEWS)
-    trust = fetch_model_trust_regime(str(regime.get("label", "range")), "4h")  # fallback trust from 4h
+    primary_minutes = _horizon_for(trigger)
+    primary_hz = minutes_to_horizon(primary_minutes)
+    horizon_list = default_forecast_horizons()
+    seen_hz: List[str] = []
+    for hz_cfg in horizon_list:
+        hz_norm = hz_cfg.lower().strip()
+        if hz_norm not in seen_hz:
+            seen_hz.append(hz_norm)
+    if primary_hz not in seen_hz:
+        seen_hz.insert(0, primary_hz)
+    forecast_specs = []
+    for hz_name in seen_hz:
+        try:
+            forecast_specs.append((hz_name, horizon_to_minutes(hz_name)))
+        except ValueError:
+            continue
+
     event_type = None
     if trigger.type == "NEWS":
         event_type = _classify_news_event(str(trigger.meta.get("title", "")))
-        try:
-            ev_trust = fetch_model_trust_regime_event(str(regime.get("label", "range")), "4h", event_type)
-            if ev_trust:
-                trust.update(ev_trust)
-        except Exception:
-            pass
-    out = call_tool(
-        "run_models_and_ensemble",
-        {"features_s3": features_s3, "horizon": hz, "neighbors": topk, "trust_weights": trust},
-    ) or {}
-    if not out:
-        try:
-            from ..models.models import ModelsInput as _MIn, run as _run_models
-            from ..ensemble.ensemble_rank import EnsembleInput as _EIn, run as _run_ens
 
-            mm = _run_models(_MIn(features_path_s3=features_s3, horizon_minutes=hmin))
-            preds = [p.model_dump() for p in mm.preds]
-            ee = _run_ens(_EIn(preds=preds, horizon=hz, trust_weights=trust, neighbors=topk))
-            out = {
-                "ensemble": {
-                    "y_hat": float(ee.y_hat),
-                    "interval": [float(ee.interval[0]), float(ee.interval[1])],
-                    "proba_up": float(ee.proba_up),
-                    "weights": ee.weights,
-                    "rationale_points": ee.rationale_points,
-                },
-                "last_price": float(mm.last_price),
-                "atr": float(mm.atr),
-                "preds": preds,
+    trust_map: Dict[str, Dict[str, float]] = {}
+    regime_label = str(regime.get("label", "range"))
+    for hz_name, _ in forecast_specs:
+        trust_weights: Dict[str, float] = {}
+        try:
+            trust_weights = fetch_model_trust_regime(regime_label, hz_name) or {}
+        except Exception:
+            trust_weights = {}
+        if trigger.type == "NEWS" and event_type:
+            try:
+                ev_trust = fetch_model_trust_regime_event(regime_label, hz_name, event_type)
+                if ev_trust:
+                    trust_weights.update(ev_trust)
+            except Exception:
+                pass
+        trust_map[hz_name] = trust_weights
+
+    ensemble_outputs: Dict[str, Dict[str, Any]] = {}
+    model_info: Dict[str, Dict[str, Any]] = {}
+    per_model_dict: Dict[str, Dict[str, Any]] = {}
+    proba_cal_map: Dict[str, float] = {}
+    weights_payload: Dict[str, float] = {}
+
+    for hz_name, minutes in forecast_specs:
+        trust_weights = trust_map.get(hz_name, {})
+        out = call_tool(
+            "run_models_and_ensemble",
+            {
+                "features_s3": features_s3,
+                "horizon": hz_name,
+                "neighbors": topk,
+                "trust_weights": trust_weights,
+            },
+        ) or {}
+        if not out:
+            try:
+                from ..models.models import ModelsInput as _MIn, run as _run_models
+                from ..ensemble.ensemble_rank import EnsembleInput as _EIn, run as _run_ens
+
+                mm = _run_models(
+                    _MIn(features_path_s3=features_s3, horizon_minutes=minutes)
+                )
+                preds = [p.model_dump() for p in mm.preds]
+                ee = _run_ens(
+                    _EIn(
+                        preds=preds,
+                        horizon=hz_name,
+                        trust_weights=trust_weights,
+                        neighbors=topk,
+                    )
+                )
+                out = {
+                    "ensemble": {
+                        "y_hat": float(ee.y_hat),
+                        "interval": [float(ee.interval[0]), float(ee.interval[1])],
+                        "proba_up": float(ee.proba_up),
+                        "weights": ee.weights,
+                        "rationale_points": ee.rationale_points,
+                    },
+                    "last_price": float(mm.last_price),
+                    "atr": float(mm.atr),
+                    "preds": preds,
+                }
+            except Exception:
+                out = {}
+
+        ens = (out.get("ensemble") or {})
+        preds = out.get("preds") or []
+        last_price = float(out.get("last_price", 0.0) or 0.0)
+        atr = float(out.get("atr", 0.0) or 0.0)
+        ensemble_outputs[hz_name] = ens
+        model_info[hz_name] = {
+            "preds": preds,
+            "last_price": last_price,
+            "atr": atr,
+        }
+        per_model = {
+            str(p.get("model")): {
+                "y_hat": p.get("y_hat"),
+                "pi_low": p.get("pi_low"),
+                "pi_high": p.get("pi_high"),
+                "proba_up": p.get("proba_up"),
+                "cv_metrics": p.get("cv_metrics"),
             }
+            for p in preds
+            if p.get("model")
+        }
+        per_model_dict[hz_name] = per_model
+        try:
+            p_cal = calibrate_proba(
+                float(ens.get("proba_up", 0.5) or 0.5),
+                (
+                    float((ens.get("interval") or [0.0, 0.0])[0]),
+                    float((ens.get("interval") or [0.0, 0.0])[1]),
+                ),
+                last_price,
+                atr,
+                hz_name,
+            )
         except Exception:
-            out = {}
-
-    e = (out.get("ensemble") or {})
-    preds = out.get("preds") or []
-    last_price = float(out.get("last_price", 0.0) or 0.0)
-    atr = float(out.get("atr", 0.0) or 0.0)
-    # Apply probability calibration (isotonic + uncertainty)
-    try:
-        p_cal = calibrate_proba(
-            float(e.get("proba_up", 0.5) or 0.5),
-            (float((e.get("interval") or [0.0, 0.0])[0]), float((e.get("interval") or [0.0, 0.0])[1])),
-            last_price,
-            atr,
-            hz,
+            p_cal = float(ens.get("proba_up", 0.5) or 0.5)
+        proba_cal_map[hz_name] = p_cal
+        upsert_prediction(
+            run_id,
+            hz_name,
+            float(ens.get("y_hat", 0.0) or 0.0),
+            float((ens.get("interval") or [0.0, 0.0])[0]),
+            float((ens.get("interval") or [0.0, 0.0])[1]),
+            float(p_cal),
+            per_model,
         )
-    except Exception:
-        p_cal = float(e.get("proba_up", 0.5) or 0.5)
-    upsert_prediction(
-        run_id,
-        hz,
-        float(e.get("y_hat", 0.0) or 0.0),
-        float((e.get("interval") or [0.0, 0.0])[0]),
-        float((e.get("interval") or [0.0, 0.0])[1]),
-        float(p_cal),
-        {p.get("model"): {k: p.get(k) for k in ("y_hat", "pi_low", "pi_high", "proba_up", "cv_metrics")} for p in preds},
-    )
-    upsert_ensemble_weights(run_id, e.get("weights") or {})
+        weights_payload.update(
+            {f"{hz_name}:{m}": float(w) for m, w in (ens.get("weights") or {}).items()}
+        )
+
+    if weights_payload:
+        upsert_ensemble_weights(run_id, weights_payload)
+
+    if primary_hz not in ensemble_outputs and forecast_specs:
+        primary_hz = forecast_specs[0][0]
+        primary_minutes = forecast_specs[0][1]
+    else:
+        primary_minutes = horizon_to_minutes(primary_hz)
+
+    ens_primary = ensemble_outputs.get(primary_hz, {})
+    model_primary = model_info.get(primary_hz, {})
+    preds = model_primary.get("preds", [])
+    last_price = float(model_primary.get("last_price", 0.0) or 0.0)
+    atr = float(model_primary.get("atr", 0.0) or 0.0)
+    p_cal = proba_cal_map.get(primary_hz, float(ens_primary.get("proba_up", 0.5) or 0.5))
 
     # 4) Chart reasoning (LLM-based technical view)
     try:
@@ -372,9 +463,9 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     # 5) Trade card
     tri = TradeRecommendInput(
         current_price=last_price,
-        y_hat_4h=float(e.get("y_hat", 0.0) or 0.0),  # reuse field for short horizon
-        interval_low=float((e.get("interval") or [0.0, 0.0])[0]),
-        interval_high=float((e.get("interval") or [0.0, 0.0])[1]),
+        y_hat_4h=float(ens_primary.get("y_hat", 0.0) or 0.0),  # reuse field for short horizon
+        interval_low=float((ens_primary.get("interval") or [0.0, 0.0])[0]),
+        interval_high=float((ens_primary.get("interval") or [0.0, 0.0])[1]),
         proba_up=float(p_cal),
         atr=atr,
         regime=str(regime.get("label")),
@@ -384,7 +475,7 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
         now_ts=int(now.timestamp()),
         tz_name=os.getenv("TIMEZONE", "Europe/Moscow"),
         valid_for_minutes=int(os.getenv("RT_VALID_FOR_MIN", "30")),
-        horizon_minutes=hmin,
+        horizon_minutes=primary_minutes,
     )
     card = run_trade(tri)
     # annotate reason codes
@@ -449,7 +540,7 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
     # 6) Explain (short note)
     reason_text = _short_reason(trigger)
     md = (
-        f"<b>Real-Time сигнал</b> ({hz})\n"
+        f"<b>Real-Time сигнал</b> ({primary_hz})\n"
         f"Приоритет: <b>{pr.label.upper()}</b> (score={pr.score})\n"
         f"{reason_text}\n\n"
         + (f"Тех.сентимент: {ta.get('technical_sentiment','n/a')} (conf≈{float(ta.get('confidence_score',0.0)):.2f})\n" if ta else "")
@@ -460,11 +551,11 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
             if alpha_match and alpha_match.matched
             else ""
         )
-        + f"p_up(cal)≈{float(p_cal):.2f}, ŷ≈{float(e.get('y_hat',0.0)):.2f}\n"
+        + f"p_up(cal)≈{float(p_cal):.2f}, ŷ≈{float(ens_primary.get('y_hat',0.0)):.2f}\n"
         + f"Рекомендация: {card.get('side')} lev×{card.get('leverage')} SL={card.get('stop_loss')} TP={card.get('take_profit')} conf≈{card.get('confidence')}\n"
         + (f"Событие: {event_type}\n" if event_type else "")
         + (f"EventStudy: n={ev_summary.get('n')} avg={ev_summary.get('avg_change'):.3f} p_pos={ev_summary.get('p_positive'):.2f}\n" if isinstance(ev_summary, dict) and ev_summary.get('n') else "")
-        + f"Горизонт: ~{hmin} мин"
+        + f"Горизонт: ~{primary_minutes} мин"
     )
     upsert_explanations(run_id, md, [])
 
@@ -478,7 +569,7 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
                 levels = [float(card.get("stop_loss")), float(card.get("take_profit"))]
             except Exception:
                 levels = []
-            chart_url = _plot_price(features_s3, title=f"{trigger.symbol} {hz}", y_hat_4h=float(e.get("y_hat", 0.0) or 0.0), levels=levels, slot=slot)
+            chart_url = _plot_price(features_s3, title=f"{trigger.symbol} {primary_hz}", y_hat_4h=float(ens_primary.get("y_hat", 0.0) or 0.0), levels=levels, slot=slot)
             if chart_url:
                 md = md + f"\nГрафик: {chart_url}"
     except Exception:
@@ -492,17 +583,17 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
             try:
                 side_est = str(card.get("side") or ("LONG" if p_cal >= 0.5 else "SHORT"))
                 dedup_sec = int(os.getenv("RT_ALERT_DEDUP_SEC", "120"))
-                dkey = f"rt:dedup:{trigger.type}:{hz}:{side_est}"
+                dkey = f"rt:dedup:{trigger.type}:{primary_hz}:{side_est}"
                 recent = _get_cache(dkey)
                 if recent:
                     try:
-                        push_values(job="rt_master", values={"dedup_skipped": 1.0}, labels={"type": trigger.type, "horizon": hz})
+                        push_values(job="rt_master", values={"dedup_skipped": 1.0}, labels={"type": trigger.type, "horizon": primary_hz})
                     except Exception:
                         pass
                     return {
                         "run_id": run_id,
                         "slot": slot,
-                        "horizon": hz,
+                        "horizon": primary_hz,
                         "trigger": trigger.type,
                         "trade": {"card": card, "verified": ok, "reason": reason, "dedup": True},
                     }
@@ -528,16 +619,16 @@ def run_realtime_analysis(trigger: Trigger) -> Dict[str, Any]:
             job="rt_master",
             values={
                 "latency_sec": float(max(0, int(datetime.now(timezone.utc).timestamp()) - int(trigger.ts or 0))),
-                "p_up": float(e.get("proba_up", 0.0) or 0.0),
+                "p_up": float(ens_primary.get("proba_up", 0.0) or 0.0),
             },
-            labels={"type": trigger.type, "horizon": hz},
+            labels={"type": trigger.type, "horizon": primary_hz},
         )
     except Exception:
         pass
     return {
         "run_id": run_id,
         "slot": slot,
-        "horizon": hz,
+        "horizon": primary_hz,
         "trigger": trigger.type,
         "trade": {"card": card, "verified": ok, "reason": reason},
     }

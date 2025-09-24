@@ -148,6 +148,7 @@ PY
 - **Обучение моделей**: запускайте `pipeline.ops.train_indicator_params` с собранным CSV (уже добавлено в чек-лист). Это не требует платных сервисов.
 - **Валидация Chart Vision**: сформируйте изображения графиков локально (`matplotlib`/`plotly`) и используйте бесплатный tier OpenAI (или локальные модели вроде [LLaVA](https://github.com/haotian-liu/LLaVA)) — главное, чтобы модель могла работать без доп. затрат.
 - **Technical Synthesis статистика**: прогоните backtest на локальных данных (см. `pipeline/trading/backtest/runner.py`) и сохраните результаты в `docs/METRICS_BASELINE.md`.
+- **Горизонты прогноза**: релизный пайплайн обучает и публикует ансамбли для 30m/4h/12h/24h. Обновляйте ONNX/PKL через `train_indicator_params`, чтобы все горизонты оставались в актуальном состоянии.
 
 ### 8.3 Адаптивная оркестрация
 - **Event Listener**: запустите локально `python -m pipeline.orchestration.event_listener` (в docker-compose или systemd). Все зависимости бесплатны.
