@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-"""Фоновый слушатель событий для MasterOrchestratorAgent."""
+"""Фоновый обработчик событий для master orchestrator."""
 
-import os
+import argparse
 import time
+from typing import Sequence
 
 from loguru import logger
 
@@ -11,24 +12,38 @@ from ..infra.db import fetch_pending_orchestrator_events
 from .master_orchestrator_agent import MasterOrchestratorAgent
 
 
-def main() -> None:
-    poll = float(os.getenv("ORCHESTRATOR_EVENT_POLL_SEC", "10"))
+def process_once(agent: MasterOrchestratorAgent, slot: str) -> bool:
+    pending: Sequence[dict] = fetch_pending_orchestrator_events(limit=10)
+    if not pending:
+        return False
+    logger.info("event_listener: найдено %d событий, запускаем orchestrator", len(pending))
+    agent.run({"slot": slot})
+    return True
+
+
+def loop(poll_interval: int, slot: str) -> None:
     agent = MasterOrchestratorAgent()
-    logger.info("Orchestrator event listener started (poll=%.1fs)", poll)
-    try:
-        while True:
-            pending = fetch_pending_orchestrator_events(limit=1)
-            if pending:
-                logger.info(
-                    "Processing orchestrator events: %s",
-                    ", ".join(str(evt.get("event_type")) for evt in pending),
-                )
-                agent.run({})
-            time.sleep(poll)
-    except KeyboardInterrupt:  # pragma: no cover - manual stop
-        logger.info("Event listener stopped")
+    while True:
+        try:
+            processed = process_once(agent, slot)
+            if not processed:
+                time.sleep(max(5, poll_interval))
+        except KeyboardInterrupt:  # pragma: no cover
+            logger.info("event_listener остановлен пользователем")
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("event_listener error: %s", exc)
+            time.sleep(poll_interval)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Background listener for orchestrator events")
+    parser.add_argument("--poll", type=int, default=30, help="Интервал опроса в секундах")
+    parser.add_argument("--slot", default="orchestrator", help="Слот orchestrator'а")
+    args = parser.parse_args()
+    loop(args.poll, args.slot)
+
+
+if __name__ == "__main__":  # pragma: no cover
     main()
 

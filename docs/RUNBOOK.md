@@ -31,6 +31,26 @@
    ```
    При необходимости замените `data/indicator_training.csv` на свой датасет.
 
+   > Примечание. Датасет можно оперативно сформировать из `data/btc-usd-max.csv`:
+   > ```bash
+   > PYTHONPATH=services/pipeline/src python -m pipeline.ops.prepare_indicator_data
+   > ```
+   > Скрипт соберёт `trend_feature`, `vol_feature`, `news_factor` и целевые окна для всех режимов рынка.
+
+4. Интеграция `PROJECT_TASKS_WEBHOOK`
+
+   - Для smoke-теста используйте локальный ресивер:
+     ```bash
+     PYTHONPATH=services/pipeline/src python ops/scripts/test_project_webhook.py
+     ```
+     Скрипт подменяет БД, запускает агент `StrategicDataAgent` и выводит JSON с телом POST-запроса.
+
+   - **Linear**: создайте *Automation → External webhook*, скопируйте URL и сохраните в `.env` как `PROJECT_TASKS_WEBHOOK`. Linear принимает запросы без дополнительных заголовков, если webhook создан именно как Automation.
+
+   - **Jira Cloud**: используйте Automation → "Send web request" и выберите Public URL (без авторизации). Если требуется защита, подключите промежуточный relay (n8n/Zapier) и передавайте туда `PROJECT_TASKS_WEBHOOK`.
+
+   - После деплоя перезапустите пайплайн (docker/systemd). Проверяйте новые задачи в выбранной PMS и лог агента `strategic-data-agent`.
+
 ## 2. Сервис событий оркестратора
 
 Поднимите фоновый слушатель, чтобы события `data_anomaly` и `post_mortem_feedback` обрабатывались мгновенно:
@@ -114,8 +134,13 @@ PY
 ### 8.1 Стратегическое управление данными
 - **Источники данных**: используйте бесплатные CSV/JSON из [CryptoDataDownload](https://www.cryptodatadownload.com/), [CoinGecko API](https://www.coingecko.com/en/api/documentation) и открытые дашборды Dune (через экспорт CSV). Пример каталога лежит в `data/sources_catalog.json` (можно переопределить через `DATA_SOURCES_CATALOG`).
 - **Интеграция**: `strategic/discovery.py` уже подхватывает JSON каталога; достаточно добавить новые записи в файл.
-- **Калибровка trust-score**: храните историческую корреляцию сигналов в `data/source_trust_calibration.csv` (или задайте путь через `SOURCE_TRUST_CALIBRATION`).
-- **Калибровка trust-score**: сохраните исторический CSV с колонками `source, signal_correlation, popularity` и используйте его при запуске агента для пересчёта веса.
+- **Калибровка trust-score**: используйте скрипт
+  ```bash
+  PYTHONPATH=services/pipeline/src python -m pipeline.ops.calibrate_source_trust \
+      --catalog data/sources_catalog.json \
+      --output data/source_trust_calibration.csv
+  ```
+  Файл можно задать через `SOURCE_TRUST_CALIBRATION`.
 - **Авто-задачи**: для теста `PROJECT_TASKS_WEBHOOK` используйте бесплатный сервис типа [Webhook.site](https://webhook.site/) или локальный FastAPI listener.
 
 ### 8.2 Динамический технический анализ
@@ -142,3 +167,11 @@ PY
 
 ### 8.7 Runbook
 - Следуйте инструкциям из этого файла (не требуется платных сервисов): `.env`, миграции с `psql`, обучение моделей, safe-mode тесты и мониторинг.
+
+## 9. Полный прогон релизного пайплайна
+
+```bash
+PYTHONPATH=services/pipeline/src python -m pipeline.orchestration.agent_flow --slot=manual
+```
+
+> ⚠️ На текущей конфигурации запуск завершается с ошибкой `UnboundLocalError: cannot access local variable 'datetime'` в `agent_flow.py`. Перед продакшеном поправьте импорт/обращение к `datetime`, затем повторите прогон, чтобы обновить baseline-метрики.

@@ -18,6 +18,45 @@ import os
 import numpy as np
 
 
+def _render_price_chart(
+    df: pd.DataFrame,
+    title: str,
+    slot: str,
+    suffix: str,
+    levels: Optional[List[float]] = None,
+    y_hat_4h: Optional[float] = None,
+    y_hat_12h: Optional[float] = None,
+) -> str:
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(df["dt"], df["close"], label="Close", color="#1f77b4", linewidth=1.2)
+
+    if levels:
+        for lv in levels:
+            ax.axhline(lv, color="#cccccc", linestyle="--", linewidth=0.8)
+
+    if y_hat_4h is not None:
+        ax.axhline(y_hat_4h, color="#2ca02c", linestyle=":", linewidth=1.2, label="4h forecast")
+    if y_hat_12h is not None:
+        ax.axhline(y_hat_12h, color="#ff7f0e", linestyle=":", linewidth=1.2, label="12h forecast")
+
+    _overlay_brand(fig, ax, title)
+    ax.set_xlabel("Time (UTC)")
+    ax.set_ylabel("Price")
+    ax.grid(True, alpha=0.2)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+
+    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = f"runs/{date_key}/{slot}/{suffix}.png"
+    s3_uri = upload_bytes(path, buf.getvalue(), content_type="image/png")
+    return s3_uri
+
+
 def _overlay_brand(fig, ax, title: str | None = None) -> None:
     """Overlay simple watermark and optional logo from S3.
 
@@ -71,35 +110,45 @@ def plot_price_with_levels(
     df = df.sort_values("ts")
     df["dt"] = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert("UTC")
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(df["dt"], df["close"], label="Close", color="#1f77b4", linewidth=1.2)
+    return _render_price_chart(df, title=title, slot=slot, suffix="chart", levels=levels, y_hat_4h=y_hat_4h, y_hat_12h=y_hat_12h)
 
-    if levels:
-        for lv in levels:
-            ax.axhline(lv, color="#cccccc", linestyle="--", linewidth=0.8)
 
-    if y_hat_4h is not None:
-        ax.axhline(y_hat_4h, color="#2ca02c", linestyle=":", linewidth=1.2, label="4h forecast")
-    if y_hat_12h is not None:
-        ax.axhline(y_hat_12h, color="#ff7f0e", linestyle=":", linewidth=1.2, label="12h forecast")
+def plot_multi_timeframe_set(
+    features_path_s3: str,
+    slot: str,
+    symbol: str,
+    timeframes: Optional[List[str]] = None,
+    levels: Optional[List[float]] = None,
+) -> dict[str, str]:
+    """Построить набор графиков для нескольких таймфреймов.
 
-    # Title & watermark/branding
-    _overlay_brand(fig, ax, title)
-    ax.set_xlabel("Time (UTC)")
-    ax.set_ylabel("Price")
-    ax.grid(True, alpha=0.2)
-    ax.legend(loc="upper left")
-    fig.tight_layout()
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-
-    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path = f"runs/{date_key}/{slot}/chart.png"
-    s3_uri = upload_bytes(path, buf.getvalue(), content_type="image/png")
-    return s3_uri
+    Возвращает {timeframe: s3_uri}.
+    """
+    raw = download_bytes(features_path_s3)
+    table = pq.read_table(pa.BufferReader(raw))
+    df = table.to_pandas().sort_values("ts")
+    df["dt"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+    df = df.set_index("dt")
+    tf_list = timeframes or ["1w", "1d", "4h", "1h"]
+    mapping = {"1w": "1W", "1d": "1D", "4h": "4H", "1h": "1H"}
+    outputs: dict[str, str] = {}
+    for tf in tf_list:
+        rule = mapping.get(tf)
+        if not rule:
+            continue
+        ohlc = df.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+        if ohlc.empty:
+            continue
+        ohlc = ohlc.reset_index().rename(columns={"dt": "dt"})
+        uri = _render_price_chart(
+            ohlc,
+            title=f"{symbol} {tf.upper()}",
+            slot=slot,
+            suffix=f"chart_{tf}",
+            levels=levels,
+        )
+        outputs[tf] = uri
+    return outputs
 
 
 def plot_risk_breakdown(

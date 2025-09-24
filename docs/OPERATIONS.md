@@ -35,9 +35,20 @@ make analyze ARGS="price data/prices.parquet"
 - Укажите `PROM_PUSHGATEWAY_URL`.
 - Пушатся: `pipeline_step_seconds`, `pipeline_value` (бизнес/валид./риск метрики).
 - Стек: `docker compose up -d pushgateway prometheus grafana`.
-- Дашборд: ops/grafana/dashboards/pipeline_overview.json.
-- Дашборды: ops/grafana/dashboards/pipeline_overview.json и ops/grafana/dashboards/affiliate_overview.json (поступления/комиссии/конверсия по партнёрам).
+- Дашборды: `ops/grafana/dashboards/pipeline_overview.json`, `ops/grafana/dashboards/agents_overview.json` и `ops/grafana/dashboards/affiliate_overview.json` (поступления/комиссии/конверсия по партнёрам).
 - Алерты: ops/prometheus/alerts.yml (Alertmanager на 9093).
+
+### Импорт дашборда Agents Overview
+
+1. Откройте Grafana → *Dashboards → Import*.
+2. Выберите «Upload JSON file» и укажите `ops/grafana/dashboards/agents_overview.json`.
+3. В поле Datasource выберите рабочий Prometheus (тот же, что использует `pipeline_overview`).
+4. После импорта проверьте панели:
+   - `pipeline_value{name="orchestrator_mode",job="master_orchestrator"}`
+   - `pipeline_value{name="chart_vision_bias",job="chart_vision_agent"}`
+   - `pipeline_value{name="total",job="memory-guardian-curation"}`
+   - `pipeline_value{name="red_team_scenarios",job="red_team_agent"}`
+5. При необходимости скорректируйте интервалы (`refresh=30s`) из UI Grafana.
 
 Проверка сервиса и LLM
 

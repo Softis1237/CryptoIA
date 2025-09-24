@@ -7,6 +7,8 @@ from typing import Dict
 
 from pydantic import BaseModel, Field
 
+from ..infra import metrics
+from ..infra.db import fetch_agent_config
 from ..infra.run_lock import slot_lock
 from .base import AgentResult, BaseAgent
 
@@ -32,11 +34,26 @@ class TechnicalSynthesisAgent(BaseAgent):
     name = "technical-synthesis-agent"
     priority = 34
 
+    def __init__(self) -> None:
+        cfg = fetch_agent_config("TechnicalSynthesis") or {}
+        params = cfg.get("parameters") if isinstance(cfg, dict) else None
+        default = {"indicators": 1.0, "smc": 1.0, "vision": 1.0}
+        weights = {}
+        if isinstance(params, dict):
+            weights = {
+                key: float(params.get(f"weight_{key}", default.get(key, 1.0)))
+                for key in default
+            }
+        self._weights = {**default, **weights}
+        self._record_metrics = params.get("record_metrics", True) if isinstance(params, dict) else True
+
     def run(self, payload: dict) -> AgentResult:
         params = TechnicalSynthesisPayload(**payload)
         with slot_lock(params.slot):
             scores = self._score_components(params)
             verdict = self._combine(scores)
+            if self._record_metrics:
+                self._push_metrics(verdict)
         return AgentResult(name=self.name, ok=True, output={"verdict": verdict, "components": [s.__dict__ for s in scores]})
 
     def _score_components(self, params: TechnicalSynthesisPayload) -> list[ComponentScore]:
@@ -56,7 +73,7 @@ class TechnicalSynthesisAgent(BaseAgent):
             indicators_score -= 0.2
             rationale.append("Сжатие волатильности")
         indicators_score += trend_bias
-        scores.append(ComponentScore("indicators", indicators_score, "; ".join(rationale) or "Нейтрально"))
+        scores.append(ComponentScore("indicators", indicators_score * self._weights.get("indicators", 1.0), "; ".join(rationale) or "Нейтрально"))
 
         smc_status = str(params.smc.get("status", "NO_SETUP"))
         smc_score = 0.0
@@ -64,13 +81,13 @@ class TechnicalSynthesisAgent(BaseAgent):
             smc_score += 0.8
         elif smc_status.endswith("BEARISH_SETUP"):
             smc_score -= 0.8
-        scores.append(ComponentScore("smc", smc_score, f"SMC статус: {smc_status}"))
+        scores.append(ComponentScore("smc", smc_score * self._weights.get("smc", 1.0), f"SMC статус: {smc_status}"))
 
         vision_bias = str(params.vision.get("bias", "neutral"))
         vision_conf = float(params.vision.get("confidence", 0.5))
         bias_map = {"bullish": 1.0, "bearish": -1.0, "neutral": 0.0}
         vision_score = bias_map.get(vision_bias, 0.0) * vision_conf
-        scores.append(ComponentScore("vision", vision_score, f"Chart bias: {vision_bias}"))
+        scores.append(ComponentScore("vision", vision_score * self._weights.get("vision", 1.0), f"Chart bias: {vision_bias}"))
 
         return scores
 
@@ -84,6 +101,19 @@ class TechnicalSynthesisAgent(BaseAgent):
             bias = "NEUTRAL"
         confidence = min(0.95, max(0.05, abs(total) / 2.0))
         return {"bias": bias, "confidence": round(confidence, 3), "score": round(total, 3)}
+
+    def _push_metrics(self, verdict: dict) -> None:
+        try:
+            metrics.push_values(
+                job=self.name,
+                values={
+                    "score": float(verdict.get("score", 0.0) or 0.0),
+                    "confidence": float(verdict.get("confidence", 0.0) or 0.0),
+                },
+                labels={"bias": str(verdict.get("bias", "NEUTRAL"))},
+            )
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -100,4 +130,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

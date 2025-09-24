@@ -79,7 +79,7 @@ from ..reasoning.debate_arbiter import debate, multi_debate
 from ..reasoning.explain import explain_short
 from ..regime.predictor_ml import predict as predict_regime_ml
 from ..regime.regime_detect import detect as detect_regime
-from ..reporting.charts import plot_price_with_levels
+from ..reporting.charts import plot_multi_timeframe_set, plot_price_with_levels
 from ..scenarios.scenario_helper import run_llm_or_fallback as run_scenarios
 from ..similarity.similar_past import SimilarPastInput
 from ..similarity.similar_past import run as run_similar
@@ -512,8 +512,20 @@ class PlotAgent:
 
     def run(self, payload: dict) -> AgentResult:  # type: ignore[override]
         try:
-            path = plot_price_with_levels(**payload)
-            return _ok(self.name, path)
+            chart_kwargs = {
+                key: payload[key]
+                for key in ("features_path_s3", "title", "y_hat_4h", "y_hat_12h", "levels", "slot")
+                if key in payload
+            }
+            main_path = plot_price_with_levels(**chart_kwargs)
+            timeframes = plot_multi_timeframe_set(
+                features_path_s3=payload["features_path_s3"],
+                slot=str(payload.get("slot") or "manual"),
+                symbol=str(payload.get("symbol") or "BTCUSDT"),
+                timeframes=payload.get("timeframes"),
+                levels=payload.get("levels"),
+            )
+            return _ok(self.name, {"main": main_path, "timeframes": timeframes})
         except Exception as e:  # noqa: BLE001
             return _fail(self.name, e)
 
@@ -1606,12 +1618,9 @@ class ModelTrustAgent:
                     except Exception:
                         return {}
                 try:
-                    from datetime import datetime as _dt
-                    from datetime import timezone as _tz
-
                     from ..infra.db import get_conn as _get_conn
 
-                    now = _dt.now(_tz.utc)
+                    now = datetime.now(timezone.utc)
                     out: dict[str, float] = {}
                     with _get_conn() as conn:
                         with conn.cursor() as cur:
@@ -2380,21 +2389,36 @@ def run_release_flow(
                 "y_hat_12h": float(getattr(e12, "y_hat", 0.0)),
                 "levels": sc_pack.get("levels", []),
                 "slot": ctx.slot,
+                "symbol": "BTCUSDT",
+                "timeframes": ["1w", "1d", "4h", "1h"],
             }
         )  # type: ignore[attr-defined]
-    chart_s3 = results["chart"].output
+    chart_output = results["chart"].output if results.get("chart") else {}
+    chart_s3 = None
+    chart_timeframes: dict[str, str] = {}
+    if isinstance(chart_output, dict):
+        chart_s3 = chart_output.get("main")
+        chart_timeframes = chart_output.get("timeframes", {}) or {}
     vision_output: Dict[str, Any] = {}
     try:
         with timed(durations, "chart_vision"):
-            payload_cv = {
-                "run_id": ctx.run_id,
-                "symbol": "BTCUSDT",
-                "slot": "chart_vision",
-                "image_urls": [chart_s3] if chart_s3 else [],
-                "regime": regime.get("label", "range"),
-            }
-            results["chart_vision"] = co._agents["chart_vision"].run(payload_cv)  # type: ignore[attr-defined]
-            vision_output = results["chart_vision"].output or {}
+            image_urls: List[str] = []
+            for tf in ["1w", "1d", "4h", "1h"]:
+                uri = chart_timeframes.get(tf)
+                if uri:
+                    image_urls.append(uri)
+            if chart_s3:
+                image_urls.append(chart_s3)
+            if image_urls:
+                payload_cv = {
+                    "run_id": ctx.run_id,
+                    "symbol": "BTCUSDT",
+                    "slot": "chart_vision",
+                    "image_urls": image_urls,
+                    "regime": regime.get("label", "range"),
+                }
+                results["chart_vision"] = co._agents["chart_vision"].run(payload_cv)  # type: ignore[attr-defined]
+                vision_output = results["chart_vision"].output or {}
     except Exception:
         vision_output = {}
     indicators_snapshot = _indicator_snapshot(getattr(f_out, "features_path_s3", ""))
@@ -2803,16 +2827,14 @@ def run_release_flow(
 
     # Prepare concise message for Telegram
     try:
-        from datetime import datetime, timezone
-
         from ..models.calibration_runtime import calibrate_proba as _calib
         from ..telegram_bot.publisher import publish_message, publish_photo_from_s3
         from ..utils.calibration import calibrate_proba_by_uncertainty
 
         try:
-            from zoneinfo import ZoneInfo  # py>=3.9
+            from zoneinfo import ZoneInfo as _ZoneInfo  # py>=3.9
         except Exception:
-            ZoneInfo = None  # type: ignore
+            _ZoneInfo = None  # type: ignore
 
         # Calibrated probabilities
         e4_raw = float(getattr(e4, "proba_up", 0.5))
@@ -2851,7 +2873,7 @@ def run_release_flow(
             tz_name: str = os.getenv("TIMEZONE", "Europe/Moscow")
         ) -> str:
             try:
-                tz = ZoneInfo(tz_name) if ZoneInfo else timezone.utc
+                tz = _ZoneInfo(tz_name) if _ZoneInfo else timezone.utc
             except Exception:
                 tz = timezone.utc
             now = datetime.now(timezone.utc).astimezone(tz)

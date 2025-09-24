@@ -19,6 +19,7 @@ class ResourcePlan:
     safe_mode: bool = False
     risk_overrides: Dict[str, float] = field(default_factory=dict)
     triggers: List[str] = field(default_factory=list)
+    debate_interval_minutes: int = 30
 
     @property
     def run_master(self) -> bool:
@@ -45,6 +46,7 @@ class ResourcePolicy:
         slot: str,
         force_mode: str | None = None,
         pending_events: Sequence[dict] | None = None,
+        regime: str | None = None,
     ) -> ResourcePlan:
         now = datetime.now(timezone.utc)
         mode = force_mode or "Baseline"
@@ -58,12 +60,24 @@ class ResourcePolicy:
         if force_mode is None and (high_impact or any(t in {"data_anomaly", "safe_mode"} for t in triggers)):
             mode = "High-Alert"
             comments.append("Высоковажное событие в горизонте")
+        regime_norm = (regime or "range").lower()
         if mode == "High-Alert":
             jobs.extend(["master_flow", "memory_guardian_refresh", "red_team_simulation"])
         else:
             jobs.append("master_flow")
             if now.hour % 6 == 0:
                 jobs.append("memory_guardian_refresh")
+            if regime_norm in {"choppy_range", "range"} and "red_team_simulation" not in jobs:
+                jobs.append("red_team_simulation")
+            if regime_norm in {"trend_up", "trend_down"}:
+                comments.append("Режим тренда: сокращаем интенсивность дебатов")
+        debate_interval = 20
+        if regime_norm in {"trend_up", "trend_down"} and mode != "High-Alert":
+            debate_interval = 45
+        elif regime_norm in {"choppy_range"}:
+            debate_interval = 15
+        if mode == "High-Alert":
+            debate_interval = 10
         safe_mode = mode == "High-Alert"
         risk_overrides: Dict[str, float] = {}
         if safe_mode:
@@ -79,6 +93,7 @@ class ResourcePolicy:
             safe_mode=safe_mode,
             risk_overrides=risk_overrides,
             triggers=triggers,
+            debate_interval_minutes=debate_interval,
         )
         return plan
 

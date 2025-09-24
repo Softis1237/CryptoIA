@@ -66,15 +66,24 @@ class ChartVisionAgent(BaseAgent):
         return insights
 
     def _merge(self, insights: List[VisionInsight]) -> dict:
-        bulls = sum(i.confidence for i in insights if i.bias == "bullish")
-        bears = sum(i.confidence for i in insights if i.bias == "bearish")
+        weights = {"1w": 1.2, "1d": 1.0, "4h": 0.9, "1h": 0.8}
+        bulls = 0.0
+        bears = 0.0
+        total_conf = 0.0
+        for i in insights:
+            w = weights.get(i.timeframe.lower(), 0.7)
+            if i.bias == "bullish":
+                bulls += i.confidence * w
+            elif i.bias == "bearish":
+                bears += i.confidence * w
+            total_conf += i.confidence * w
         if bulls > bears * 1.1:
             bias = "bullish"
         elif bears > bulls * 1.1:
             bias = "bearish"
         else:
             bias = "neutral"
-        avg_conf = sum(i.confidence for i in insights) / max(1, len(insights))
+        avg_conf = total_conf / max(1, len(insights))
         return {
             "bias": bias,
             "confidence": round(avg_conf, 3),

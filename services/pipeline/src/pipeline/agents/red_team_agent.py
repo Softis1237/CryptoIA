@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
+from ..infra import db
 from ..infra.metrics import push_values
 from ..simulations.red_team.scenario import build_scenario_from_lesson, RedTeamScenario
 from ..trading.backtest.runner import run_from_dataframe
@@ -49,6 +50,18 @@ class RedTeamAgent(BaseAgent):
             }
             scenarios_summary.append(summary)
         suggestions = self._analyze(runs)
+        try:
+            db.insert_orchestrator_event(
+                "red_team_report",
+                {
+                    "run_id": params.run_id,
+                    "symbol": params.symbol,
+                    "scenarios": scenarios_summary,
+                    "suggestions": suggestions,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return AgentResult(
             name=self.name,
             ok=True,
@@ -63,7 +76,7 @@ class RedTeamAgent(BaseAgent):
         )
         base_price = float(os.getenv("RED_TEAM_BASE_PRICE", "30000"))
         for lesson in lessons:
-            payload = lesson.get("lesson") or {}
+            payload = dict(lesson.get("lesson") or {})
             error_type = str(payload.get("error_type", "unknown"))
             regime = str(payload.get("market_regime", "range"))
             after = float(lesson.get("outcome_after", payload.get("outcome_after", 0.0)) or 0.0)
@@ -79,16 +92,65 @@ class RedTeamAgent(BaseAgent):
                 strategy_path=strategy_path,
                 base_price=base_price,
             )
-            scenario.parameters.update(
-                {
-                    "confidence_before": confidence,
-                    "outcome_after": after,
-                    "recommendation": recommendation,
-                    "hypothesis": hypothesis,
-                }
-            )
+            enrichment = {
+                "confidence_before": confidence,
+                "outcome_after": after,
+                "recommendation": recommendation,
+                "hypothesis": hypothesis,
+                "regime": regime,
+                "error_type": error_type,
+            }
+            scenario.parameters.update(enrichment)
             scenarios.append(scenario)
+            for variant in self._pattern_variants(payload, stress, strategy_path, base_price, after):
+                variant.parameters.update(enrichment)
+                scenarios.append(variant)
         return scenarios
+
+    def _pattern_variants(
+        self,
+        lesson: Dict,
+        stress: float,
+        strategy_path: str,
+        base_price: float,
+        outcome_after: float,
+    ) -> List[RedTeamScenario]:
+        variants: List[RedTeamScenario] = []
+        error = str(lesson.get("error_type", "")).lower()
+        regime = str(lesson.get("market_regime", "")).lower()
+        stress_adj = round(stress, 2)
+        trigger_signals = "".join(str(sig).lower() for sig in lesson.get("triggering_signals", []))  # type: ignore[arg-type]
+        if "false_breakout" in error or "breakout" in trigger_signals:
+            variants.append(
+                build_scenario_from_lesson(
+                    dict(lesson),
+                    stress_factor=stress_adj * 1.2,
+                    strategy_path=strategy_path,
+                    base_price=base_price,
+                    pattern="false_breakout",
+                )
+            )
+        if regime in {"choppy_range", "range"}:
+            variants.append(
+                build_scenario_from_lesson(
+                    dict(lesson),
+                    stress_factor=stress_adj,
+                    strategy_path=strategy_path,
+                    base_price=base_price,
+                    pattern="whipsaw",
+                )
+            )
+        if abs(outcome_after) >= 0.04:
+            variants.append(
+                build_scenario_from_lesson(
+                    dict(lesson),
+                    stress_factor=stress_adj * 1.3,
+                    strategy_path=strategy_path,
+                    base_price=base_price,
+                    pattern="vol_spike",
+                )
+            )
+        return variants
 
     def _execute_backtests(
         self, scenarios: List[RedTeamScenario], params: RedTeamPayload

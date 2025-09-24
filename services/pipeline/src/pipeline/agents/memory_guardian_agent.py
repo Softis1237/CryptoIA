@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from ..infra import db
+from ..infra import db, metrics
 from ..infra.run_lock import slot_lock
 from .base import AgentResult, BaseAgent
 from .embeddings import embed_text
@@ -64,6 +64,7 @@ class MemoryGuardianAgent(BaseAgent):
             embedding = self._embed(record)
             if embedding:
                 db.upsert_structured_lesson_vector(hash_val, embedding)
+            self._push_metrics(record)
         return AgentResult(name=self.name, ok=True, output={"hash": hash_val})
 
     def query(self, payload: dict) -> AgentResult:
@@ -91,7 +92,20 @@ class MemoryGuardianAgent(BaseAgent):
 
     def refresh(self, scope: str = "trading") -> dict:
         recent = db.fetch_recent_structured_lessons(scope=scope, limit=10)
-        return {"lessons": recent}
+        total = db.count_structured_lessons(scope)
+        return {"lessons": recent, "total": total}
+
+    def curate(self, scope: str = "trading", max_items: int = 1000) -> dict:
+        total_before = db.count_structured_lessons(scope)
+        removed = 0
+        if total_before > max_items:
+            removed = db.prune_structured_lessons(scope, max_items)
+        metrics.push_values(
+            job=f"{self.name}-curation",
+            values={"removed": float(removed), "total": float(db.count_structured_lessons(scope))},
+            labels={"scope": scope},
+        )
+        return {"removed": removed, "total": total_before}
 
     def lessons_for_red_team(self, scope: str = "trading", limit: int = 10) -> List[dict]:
         return db.fetch_recent_structured_lessons(scope=scope, limit=limit)
@@ -124,6 +138,22 @@ class MemoryGuardianAgent(BaseAgent):
             return embed_text(text)
         except Exception:
             return None
+
+    def _push_metrics(self, lesson: StructuredLesson) -> None:
+        try:
+            metrics.push_values(
+                job=self.name,
+                values={
+                    "confidence_before": float(lesson.confidence_before),
+                    "outcome_after": float(lesson.outcome_after),
+                },
+                labels={
+                    "error_type": lesson.error_type,
+                    "market_regime": lesson.market_regime,
+                },
+            )
+        except Exception:
+            pass
 
 
 def main() -> None:

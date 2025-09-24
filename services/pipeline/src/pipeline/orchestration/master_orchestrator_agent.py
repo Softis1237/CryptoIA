@@ -20,6 +20,7 @@ from ..data.eco_calendar import fetch_upcoming_events
 from .resource_policy import ResourcePlan, ResourcePolicy
 from ..agents.master import run_master_flow
 from ..infra.db import (
+    fetch_latest_regime_label,
     fetch_pending_orchestrator_events,
     mark_orchestrator_events_processed,
 )
@@ -65,19 +66,27 @@ class MasterOrchestratorAgent(BaseAgent):
                         force_mode = "High-Alert"
                         summary_status = "escalated"
                         break
+            regime_label = fetch_latest_regime_label() or "range"
             plan = self._ctx.policy.build_plan(
                 events,
                 slot=params.slot,
                 force_mode=force_mode,
                 pending_events=pending_events,
+                regime=regime_label,
             )
             summary = self._execute(plan, params, events)
             final_mode = plan.mode
             if summary.get("anomaly_triggered") and plan.mode != "High-Alert":
-                alert_plan = self._ctx.policy.build_plan(events, slot=params.slot, force_mode="High-Alert")
+                alert_plan = self._ctx.policy.build_plan(
+                    events,
+                    slot=params.slot,
+                    force_mode="High-Alert",
+                    regime=regime_label,
+                )
                 summary["escalated_plan"] = self._execute(alert_plan, params, events, skip_jobs={"strategic_data"})
                 final_mode = "High-Alert"
                 summary["mode"] = "High-Alert"
+            summary["regime"] = regime_label
             summary["pending_events"] = pending_events
             if pending_events:
                 try:
@@ -98,7 +107,12 @@ class MasterOrchestratorAgent(BaseAgent):
         events: Iterable[dict],
         skip_jobs: set[str] | None = None,
     ) -> Dict[str, object]:
-        results: Dict[str, object] = {"mode": plan.mode, "jobs": plan.jobs, "events": list(events)}
+        results: Dict[str, object] = {
+            "mode": plan.mode,
+            "jobs": plan.jobs,
+            "events": list(events),
+            "debate_interval_minutes": plan.debate_interval_minutes,
+        }
         skip_jobs = skip_jobs or set()
         for job in plan.jobs:
             if job in skip_jobs:
@@ -135,6 +149,7 @@ class MasterOrchestratorAgent(BaseAgent):
                                 os.environ["SAFE_MODE_RISK_OVERRIDES"] = prev_overrides
                 elif job == "memory_guardian_refresh":
                     results["memory_refresh"] = self._ctx.memory_agent.refresh(scope="trading")
+                    results["memory_curated"] = self._ctx.memory_agent.curate(scope="trading")
                 elif job == "red_team_simulation":
                     results["red_team"] = self._ctx.red_team_agent.run({"run_id": plan.run_id, "symbol": "BTCUSDT"}).output
             except Exception as exc:  # noqa: BLE001

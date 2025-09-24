@@ -18,6 +18,7 @@ from .strategic import (
     TrustMonitor,
     TrustUpdate,
     crawl_catalogs,
+    enrich_candidate,
 )
 
 
@@ -76,7 +77,7 @@ class StrategicDataAgent(BaseAgent):
             discoveries = list(self._discover(params))
             updates = self._trust.recalculate(discoveries)
             anomalies = self._persist_and_check(discoveries, updates, params, existing_registry)
-            self._maybe_escalate(updates, anomalies)
+            self._maybe_escalate(updates, anomalies, params.run_id)
         return AgentResult(
             name=self.name,
             ok=True,
@@ -89,14 +90,15 @@ class StrategicDataAgent(BaseAgent):
 
     def _discover(self, params: StrategicDataPayload) -> Iterable[StrategicSource]:
         for candidate in crawl_catalogs(params.keywords):
+            enriched = enrich_candidate(candidate)
             yield StrategicSource(
-                name=candidate.name,
-                url=HttpUrl(str(candidate.url)),
-                provider=candidate.provider,
-                tags=list(candidate.tags),
-                popularity=float(candidate.popularity),
-                reputation=float(candidate.reputation),
-                metadata=dict(candidate.metadata),
+                name=enriched.name,
+                url=HttpUrl(str(enriched.url)),
+                provider=enriched.provider,
+                tags=list(enriched.tags),
+                popularity=float(enriched.popularity),
+                reputation=float(enriched.reputation),
+                metadata=dict(enriched.metadata),
             )
 
     def _persist_and_check(
@@ -155,7 +157,7 @@ class StrategicDataAgent(BaseAgent):
             )
         return anomalies
 
-    def _maybe_escalate(self, updates: Iterable[TrustUpdate], anomalies: List[str]) -> None:
+    def _maybe_escalate(self, updates: Iterable[TrustUpdate], anomalies: List[str], run_id: str) -> None:
         for upd in updates:
             if upd.should_escalate:
                 ensure_task(
@@ -169,7 +171,7 @@ class StrategicDataAgent(BaseAgent):
                 summary=f"[Data] Аномалия потока {name}",
                 description=(
                     "Detector зафиксировал превышение латентности/ошибок. "
-                    f"run_id={params.run_id}. Проверьте зеркальные источники и переключите safe-mode."
+                    f"run_id={run_id}. Проверьте зеркальные источники и переключите safe-mode."
                 ),
                 priority="critical",
                 tags=["anomaly", "safe_mode"],
@@ -182,7 +184,7 @@ class StrategicDataAgent(BaseAgent):
             try:
                 db.insert_orchestrator_event(
                     "data_anomaly",
-                    {"sources": anomalies, "run_id": params.run_id},
+                    {"sources": anomalies, "run_id": run_id},
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("failed to enqueue orchestrator event for anomalies: %s", exc)

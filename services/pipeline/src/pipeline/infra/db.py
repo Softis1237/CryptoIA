@@ -1831,6 +1831,31 @@ def fetch_recent_structured_lessons(scope: str, limit: int = 10) -> list[dict]:
     return out
 
 
+def count_structured_lessons(scope: str) -> int:
+    sql = "SELECT count(*) FROM agent_lessons_structured WHERE scope=%s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (scope,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+def prune_structured_lessons(scope: str, keep: int) -> int:
+    if keep <= 0:
+        return 0
+    sql = (
+        "WITH to_delete AS ("
+        "    SELECT id FROM agent_lessons_structured WHERE scope=%s"
+        "    ORDER BY created_at DESC OFFSET %s"
+    ") DELETE FROM agent_lessons_structured WHERE id IN (SELECT id FROM to_delete) RETURNING id"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (scope, int(keep)))
+            rows = cur.fetchall() or []
+            return len(rows)
+
+
 # --- SMC zones fetch --------------------------------------------------------
 def fetch_smc_zones(symbol: str, timeframe: str, status: str | None = None, limit: int = 50) -> list[dict]:
     sql = "SELECT created_at, zone_type, price_low, price_high, status, meta FROM smc_zones WHERE symbol=%s AND timeframe=%s"
