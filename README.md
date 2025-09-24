@@ -13,14 +13,14 @@ scenarios/	Моделирование сценариев «если уровен
 reasoning/	Объяснения и арбитраж аргументов (LLM/fallback); кэширование; бюджеты LLM.
 trading/	Формирование торговой карты, проверка, бумажная и живая торговля, риск‑менеджмент.
 reporting/	Генерация графиков и PDF‑/MD‑отчётов; публикация в Telegram.
-orchestration/	Сценарии запуска (predict_release, agent_flow), планировщик.
+orchestration/	Сценарии запуска (agent_flow, master_orchestrator, legacy predict_release), планировщик.
 agents/        Базовые классы и координатор агентов.
 mcp/           Мини‑сервер и клиент MCP для безопасного вызова инструментов.
 utils/         Общие утилиты (калибровка, текст).
 telegram_bot/  Интерактивный Telegram‑бот: /start, /help, настройки.
 infra/	База данных (Postgres + pgvector), кеш Redis, s3/minio, логи и метрики.
 migrations/	SQL‑миграции для PostgreSQL (таблицы для цен, сигналов, прогнозов, торговых позиций и др.).
-ops/	Инфраструктура и наблюдаемость (Prometheus, Grafana, алерты, Windmill flows). Airflow DAGи перенесены в ops/archive/airflow как опциональные.
+ops/	Инфраструктура и наблюдаемость (Prometheus, Grafana, алерты, Windmill flows). Наследие Airflow удалено — используйте Windmill или cron для планов.
 Дополнительная документация находится в docs/ — читайте ARCHITECTURE.md для схемы потоков, DATA_SOURCES.md для источников данных, DB_SCHEMA.md для описания таблиц, ENV.md для переменных окружения, OPERATIONS.md для запуска и наблюдаемости, [BITCOIN_THEORY.md](docs/BITCOIN_THEORY.md) для фундаментальных свойств биткойна, [TRADING_PRIMER.md](docs/TRADING_PRIMER.md) для основ трейдинга, TRADING.md для режимов торговли и PAYMENTS.md для оплаты подписки. В этом README собраны краткие инструкции по запуску и отладке.
 
 Новая дорожная карта развития v2 с прогрессом и параметрами RT‑триггеров: [docs/ROADMAP_V2.md](docs/ROADMAP_V2.md).
@@ -40,7 +40,7 @@ ops/	Инфраструктура и наблюдаемость (Prometheus, Gr
     6. TradeRecommend & Verify: расчёт оптимальной сделки (entry, SL, TP, leverage), проверка по ограничениям (диапазон, ATR, новости) и пометка NO‑TRADE при риске.
     7. Explain & Debate: генерация краткого объяснения и арбитража аргументов. Эти шаги используют LLM, поэтому требуют ключей и настроек бюджета.
     8. Publish: формирование сообщения для Telegram (текст + график), запись всех артефактов в БД, публикация метрик.
-По умолчанию система работает в двух режимах: плановый (scheduled_runner) и real‑time (trigger_agent → rt_master). Координатор DAG (agent_flow) и Windmill/ Airflow — опциональны и могут быть включены при необходимости.
+По умолчанию система работает в двух режимах: плановый (scheduled_runner) и real‑time (trigger_agent → rt_master). Координатор DAG (agent_flow) и Windmill — опциональны и могут быть включены при необходимости.
 Быстрый старт
     1. Склонируйте репозиторий и подготовьте окружение:
 git clone https://github.com/Softis1237/CryptoIA.git
@@ -50,9 +50,9 @@ cp .env.example .env  # заполните переменные, см. docs/ENV.
     1. Запустите инфраструктуру (Postgres + Redis + MinIO + Prometheus / Grafana) и основные сервисы:
 docker compose up -d --build
 Минимальный стек поднимет БД, кеш, MinIO, сервис pipeline, планировщик и пуш‑gateway. Графана доступна на http://localhost:3001 (импортируйте дашборд pipeline_overview.json из ops/grafana).
-    1. Запустите релиз вручную (например, для отладки):
-docker compose run --rm pipeline python -m pipeline.orchestration.predict_release --slot=manual
-Или воспользуйтесь DAG: USE_COORDINATOR=1 и python -m pipeline.orchestration.agent_flow --slot=manual.
+1. Запустите релиз вручную (например, для отладки):
+docker compose run --rm pipeline python -m pipeline.orchestration.agent_flow --slot=manual
+Монолитный скрипт `predict_release.py` остаётся как legacy fallback (используйте при отключённом координаторе: `USE_COORDINATOR=0`), но основная поддерживаемая цепочка — DAG из `agent_flow` с возможностью делегировать в MasterAgent.
     1. Проверка здоровья: сервис поднимает HTTP эндпоинт http://localhost:8000/health. Он возвращает `OK`, если Postgres и S3 доступны; в противном случае ответит `FAIL`. Дополнительно смотрите логи контейнеров (`docker compose logs -f pipeline scheduler`) и метрики (http://localhost:9091/metrics).
 
     2. Анализ: `make analyze ARGS="price <path>"` — выводит последние метрики (price, orderflow, supply-demand, patterns).
@@ -64,7 +64,7 @@ docker compose run --rm pipeline python -m pipeline.orchestration.predict_releas
 Переменные окружения
 Список основных переменных с короткими пояснениями приведён в docs/ENV.md. Настройка правильных API‑ключей критически важна: без них компоненты (например, ончейн или фьючерсы) не будут активированы.
 Расширенные возможности
-    • Многоагентный режим (Agent Coordinator): активируется USE_COORDINATOR=1 и использует DAG из orchestration/agent_flow.py. Агент flow строит зависимости между ingest, models, ensemble, reasoning, сценарием и трейдом, записывает метрики и артефакты.
+    • Многоагентный режим (Agent Coordinator): активируется USE_COORDINATOR=1 и использует DAG из orchestration/agent_flow.py (в production это основной путь). Агент flow строит зависимости между ingest, models, ensemble, reasoning, сценарием и трейдом, записывает метрики и артефакты, а при включении USE_MASTER_AGENT=1 делегирует в MasterAgent. Монолит `predict_release.py` оставлен только как резервный запуск без координатора.
     • Flowise endpoints: можно подключить внешние LLM‑пайплайны для объяснения (FLOWISE_EXPLAIN_URL), дебатов (FLOWISE_DEBATE_URL), сценариев (FLOWISE_SCENARIO_URL) и валидации. При отсутствии используются встроенные эвристики и валидаторы.
     • Мини‑MCP сервер: модуль mcp/ открывает безопасные HTTP-инструменты (get_features_tail, levels_quantiles, news_top) для LLM и других клиентов.
     • Alt‑данные: модуль ingest_altdata собирает тренды Google, открытый интерес CME, опционы, данные ликвидности и RSS события. Включается флагом ENABLE_ALT_DATA=1 и требует ключей Quandl/Coinglass.

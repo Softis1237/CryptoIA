@@ -50,9 +50,9 @@ Ops utilities
   - Run: `python -m pipeline.ops.trade_reco_tune` — пишет новую активную версию в `agent_configurations`.
 - synthetic_trigger: публикует тестовый RT‑триггер в очередь.
   - Run: `python -m pipeline.rt.synthetic_trigger VOL_SPIKE --meta '{"ratio":4.2}'`.
-- pattern discovery (Airflow): weekly DAG `pattern_discovery_weekly` runs PatternDiscoveryAgent to propose new entries for `technical_patterns` (by default in dry‑run mode).
-- memory compress (Airflow): monthly DAG `memory_compress_monthly` aggregates recent run summaries into concise lessons (`agent_lessons` table).
-- cognitive architect (Airflow): monthly DAG `cognitive_architect_monthly` proposes updated prompts/configs; writes new versions to `agent_configurations`.
+- pattern discovery (Windmill/Cron): запускайте `python -m pipeline.agents.pattern_discovery '{"dry_run": true}'` по расписанию (например, weekly) для предложений в `technical_patterns`.
+- memory compress (Windmill/Cron): ежемесячно запускайте `python -m pipeline.agents.memory_compressor '{"scope": "trading"}'`, чтобы агрегировать свежие run summaries в уроки.
+- cognitive architect (Windmill/Cron): ежемесячно вызывайте `python -m pipeline.agents.cognitive_architect '{"scope": "trading"}'` и записывайте новые версии настроек в `agent_configurations`.
 
 ChartReasoningAgent
 

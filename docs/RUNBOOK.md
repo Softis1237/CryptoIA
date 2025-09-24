@@ -150,9 +150,10 @@ PY
 - **Technical Synthesis статистика**: прогоните backtest на локальных данных (см. `pipeline/trading/backtest/runner.py`) и сохраните результаты в `docs/METRICS_BASELINE.md`.
 - **Горизонты прогноза**: релизный пайплайн обучает и публикует ансамбли для 30m/4h/12h/24h. Обновляйте ONNX/PKL через `train_indicator_params`, чтобы все горизонты оставались в актуальном состоянии.
 
-### 8.3 Адаптивная оркестрация
 - **Event Listener**: запустите локально `python -m pipeline.orchestration.event_listener` (в docker-compose или systemd). Все зависимости бесплатны.
 - **Экономический календарь**: используйте бесплатные RSS/JSON, например [Investing.com Economic Calendar (CSV)](https://www.investing.com/economic-calendar/) или [FRED API](https://fred.stlouisfed.org/docs/api/fred/). Экспортируйте данные в `data/eco_calendar.csv` и модифицируйте `eco_calendar.py`, чтобы брать данные из файла при отсутствии API-ключей.
+- **Гарантированные релизы в 00:00 и 12:00**: `scheduled_runner` в режиме `RUN_TWICE_DAILY=1` (значение по умолчанию) вычисляет окно до ближайшего слота и всегда запускает Master Orchestrator/Agent flow как минимум дважды в сутки. Даже при переключении на «умную» оркестрацию соблюдается базовый график.
+- **Основной пайплайн**: держите `USE_COORDINATOR=1` и при необходимости `USE_MASTER_AGENT=1`, чтобы orchestrator делегировал прогнозы в MasterAgent (`run_master_flow`). Скрипт `predict_release.py` оставьте отключённым (`USE_COORDINATOR=0`), только как запасной вариант для ручного запуска без координации.
 
 ### 8.4 Память и обучение
 - **Кураторский процесс**: создайте Jupyter-ноутбук для анализа таблицы `agent_lessons_structured` и запускайте его локально (pandas + SQLAlchemy).
@@ -174,5 +175,3 @@ PY
 ```bash
 PYTHONPATH=services/pipeline/src python -m pipeline.orchestration.agent_flow --slot=manual
 ```
-
-> ⚠️ На текущей конфигурации запуск завершается с ошибкой `UnboundLocalError: cannot access local variable 'datetime'` в `agent_flow.py`. Перед продакшеном поправьте импорт/обращение к `datetime`, затем повторите прогон, чтобы обновить baseline-метрики.

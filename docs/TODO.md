@@ -2,31 +2,40 @@
 
 Список ключевых действий, которые необходимо выполнить по ТЗ, исходя из текущей документации и состояния репозитория.
 
-## 1. Стратегическое управление данными
-- [x] Подключить бесплатные каталоги/API (CoinGecko, CryptoDataDownload, публичные Dune CSV) к `strategic_data_agent` (см. `data/sources_catalog.json`).
-- [x] Провести калибровку `source_trust_score` на исторических данных (используйте `data/source_trust_calibration.csv`).
-- [ ] Настроить реальный `PROJECT_TASKS_WEBHOOK`, проверить создание задач в выбранной PMS (требуются боевые креды).
+## 1. Данные и модели
+- [x] Подключить бесплатные каталоги/API (CoinGecko, CryptoDataDownload, публичные Dune CSV) к `strategic_data_agent`.
+- [x] Провести калибровку `source_trust_score` (см. `data/source_trust_calibration.csv`).
+- [ ] Настроить боевой `PROJECT_TASKS_WEBHOOK` и подтвердить создание задач в PMS.
+- [ ] Собрать собственный датасет (OHLCV из CryptoDataDownload/CCXT) и переобучить `train_indicator_params` перед релизом.
+- [ ] Валидировать `chart_vision_agent` на выбранной мультимодальной модели и зафиксировать baseline точности.
+- [ ] Актуализировать статистику `technical_synthesis_agent` (win rate / precision) и при необходимости скорректировать веса.
 
-- Собрать собственный датасет (бесплатные OHLCV с CryptoDataDownload/CCXT) и переобучить модели параметров индикаторов (`pipeline.ops.train_indicator_params`).
-- Валидировать output `chart_vision_agent` с бесплатной/локальной мультимодальной моделью (например, LLaVA, gpt-4o-mini free tier) и подготовить baseline точности.
-- Накопить статистику `technical_synthesis_agent` (win rate / precision) на истории и скорректировать веса при необходимости.
+## 2. Real-Time & Guardian
+- [x] Развернуть `pipeline.orchestration.event_listener` (systemd/docker).
+- [x] Подключить бесплатный экономический календарь (RSS/FRED) и настроить мониторинг High-Alert.
+- [x] Реализовать и задокументировать `PositionGuardianAgent` + Investment Arbiter.
+- [ ] Применить расписание guardian: cron или `kubectl apply -f ops/guardian-cronjob.yaml` на проде.
+- [ ] Настроить `TELEGRAM_ALERT_CHAT_ID`, `GUARDIAN_PROB_THRESHOLD` и проверить доставку алертов.
+- [ ] Подключить Prometheus-метрику `guardian_alerts_total` и дашборд.
 
-- [x] Развернуть фоновый сервис `pipeline.orchestration.event_listener` (systemd/docker) для обработки событий в реальном времени.
-- [x] Подключить бесплатные источники экономического календаря (RSS, FRED API) и обеспечить наблюдаемость SLA High-Alert режима.
+## 3. Cognition & обучение
+- [x] Настроить курирование уроков (`agent_lessons_structured`).
+- [x] Зафиксировать процесс мониторинга Memory Guardian (latency, precision) и его улучшения.
+- [x] Расширить генератор сценариев Red Team и сохранять отчёты.
+- [ ] Наполнить Knowledge Core (RAG) актуальными материалами и добавить чек в релизный пайплайн.
+- [ ] Дополнить месячный «Когнитивный Архитектор» автоматической корректировкой весов Confidence.
 
-## 4. Память и обучение
-- [x] Настроить процесс курирования уроков (`agent_lessons_structured`): пересмотр дублей, очистка устаревших записей, контроль качества эмбеддингов.
-- [x] Мониторить эффективность Memory Guardian (точность выдачи, latency) и документировать корректировки.
+## 4. Метрики и мониторинг
+- [x] Заполнить `docs/METRICS_BASELINE.md`.
+- [ ] Настроить Grafana / Prometheus по ключевым сервисам (`master_orchestrator`, `chart_vision_agent`, `red_team_agent`, `memory_guardian`, guardian).
+- [ ] Описать процедуру обновления baseline-метрик после каждого релиза.
 
-- [x] Дополнить генератор сценариев специфическими паттернами (ложный пробой, пиление, волатильные всплески) на основе numpy/pandas.
-- [x] Автоматически сохранять отчёты Red Team (KPI, гипотезы) и интегрировать их в процесс A/B-тестирования стратегий.
+## 5. Runbook и эксплуатация
+- [x] Обновить `docs/RUNBOOK.md` (guardian, cron/k8s, переменные окружения).
+- [x] Задокументировать новые ENV (`docs/ENV.md`, `docs/TRADING.md`).
+- [ ] Финальный проход runbook на staging с фиксированием замечаний.
+- [ ] Подготовить post-launch чек-лист (наблюдение за алертами, сравнение фактических сигналов с плановыми результатами).
 
-## 6. Метрики и мониторинг
-- [x] Заполнить базовый отчёт `docs/METRICS_BASELINE.md` после первых прогонов (Win Rate, повторные ошибки, период адаптации, новые гипотезы).
-- Настроить дашборд Prometheus/Grafana по метрикам `master_orchestrator`, `chart_vision_agent`, `red_team_agent`, `memory_guardian`.
-
-## 7. Runbook
-- Следовать инструкциям `docs/RUNBOOK.md` при подготовке .env, миграций и safe-mode тестов.
-- После каждого релиза обновлять runbook и baseline-метрики.
+Документ обновляйте по мере выполнения пунктов — цель: чистый чек-лист перед боевым запуском.
 
 Документ обновляйте по мере выполнения пунктов.
