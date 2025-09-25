@@ -27,20 +27,38 @@ def main():
         bucket = os.getenv("S3_BUCKET", "artifacts")
         features = f"s3://{bucket}/runs/{date_key}/{slot}/features.parquet"
 
-    horizon_minutes = int(os.getenv("HORIZON_MINUTES", "240"))
+    horizons_env = os.getenv("HORIZONS")
+    horizon_minutes_env = os.getenv("HORIZON_MINUTES")
+    horizons: list[str | int] = []
+    if horizons_env:
+        horizons = [h.strip() for h in horizons_env.split(",") if h.strip()]
+    elif horizon_minutes_env:
+        if "," in horizon_minutes_env:
+            horizons = [int(h.strip()) for h in horizon_minutes_env.split(",") if h.strip()]
+        else:
+            horizons = [int(horizon_minutes_env)]
+    else:
+        horizons = ["4h"]
     name = os.getenv("MODEL_NAME", "sklearn-bundle")
     version = os.getenv("MODEL_VERSION") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prefix = os.getenv("ML_MODELS_S3_PREFIX", "models/ml")
 
-    export, metrics = train_lightgbm_randomforest(features, horizon_minutes=horizon_minutes)
+    export, metrics = train_lightgbm_randomforest(features, horizons=horizons)
     uri = save_models_s3(export, metrics, s3_key_prefix=prefix)
 
     # Upsert to registry
+    per_h = export.get("per_horizon") or {}
     params = {
-        "horizon_minutes": horizon_minutes,
         "feature_cols": export.get("feature_cols"),
         "freq_min": export.get("freq_min"),
-        "models": list((export.get("models") or {}).keys()),
+        "horizons": [
+            {
+                "label": label,
+                "minutes": payload.get("horizon_minutes"),
+                "models": list((payload.get("models") or {}).keys()) if isinstance(payload, dict) else [],
+            }
+            for label, payload in (per_h.items() if isinstance(per_h, dict) else [])
+        ],
     }
     upsert_model_registry(name=name, version=version, path_s3=uri, params=params, metrics=metrics)
 
@@ -50,4 +68,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

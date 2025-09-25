@@ -33,10 +33,10 @@ def _should_run(interval_h: float) -> bool:
     return (now - last) >= timedelta(hours=interval_h)
 
 
-def run_once(features_s3: str, horizon_minutes: int) -> str:
-    export, metrics = train_lightgbm_randomforest(features_s3, horizon_minutes=horizon_minutes)
+def run_once(features_s3: str, horizons: List[str]) -> tuple[str, dict]:
+    export, metrics = train_lightgbm_randomforest(features_s3, horizons=horizons)
     uri = save_models_s3(export, metrics)
-    return uri
+    return uri, metrics
 
 
 def maybe_run() -> List[str]:
@@ -49,16 +49,29 @@ def maybe_run() -> List[str]:
     if not features_s3:
         logger.warning("retrain: RETRAIN_FEATURES_S3 is not set; skipping")
         return []
-    horizons = [h.strip() for h in os.getenv("RETRAIN_HORIZONS", "4h,12h").split(",") if h.strip()]
+    horizons = [
+        h.strip()
+        for h in os.getenv("RETRAIN_HORIZONS", "1h,4h,24h").split(",")
+        if h.strip()
+    ]
+    if not horizons:
+        horizons = ["4h"]
     uris: List[str] = []
-    for h in horizons:
-        hm = 240 if h == "4h" else (720 if h == "12h" else 240)
-        try:
-            uri = run_once(features_s3, horizon_minutes=hm)
-            uris.append(uri)
-            insert_agent_metric("retrain", f"last_run_{h}", 1.0, labels={"horizon": h})
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"retrain: failed for {h}: {e}")
+    try:
+        uri, metrics = run_once(features_s3, horizons)
+        uris.append(uri)
+        if isinstance(metrics, dict):
+            for hz in metrics.keys():
+                insert_agent_metric(
+                    "retrain",
+                    f"last_run_{hz}",
+                    1.0,
+                    labels={"horizon": hz},
+                )
+        else:
+            insert_agent_metric("retrain", "last_run", 1.0, labels={"horizon": "aggregate"})
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"retrain: failed: {e}")
     return uris
 
 
@@ -70,4 +83,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

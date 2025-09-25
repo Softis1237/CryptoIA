@@ -44,6 +44,7 @@ class GuardianCandidate:
     run_id: Optional[str] = None
     risk_profile: Dict[str, Any] | None = None
     base_probability: Optional[float] = None
+    forecast_label: Optional[str] = None
 
 
 def _trail_stop_for_long(entry: float, high: float, trail_pct: float) -> float:
@@ -120,12 +121,16 @@ class PositionGuardianAgent:
         for pos_id, side, entry, sl, tp, qty, opened_at, run_id, times_json in rows:
             try:
                 current_price = price if price > 0 else self._price_fetcher(symbol)
-                base_pred = (
-                    fetch_prediction_for_run(run_id, "4h") if run_id else None
-                )
                 risk_profile = None
+                forecast_label = "4h"
                 if isinstance(times_json, dict):
-                    risk_profile = times_json.get("risk_profile")
+                    rp = times_json.get("risk_profile")
+                    if isinstance(rp, dict):
+                        risk_profile = rp
+                        forecast_label = str(rp.get("forecast_label") or "4h")
+                base_pred = fetch_prediction_for_run(run_id, forecast_label) if run_id else None
+                if not base_pred and forecast_label != "4h" and run_id:
+                    base_pred = fetch_prediction_for_run(run_id, "4h")
                 out.append(
                     GuardianCandidate(
                         symbol=symbol,
@@ -142,6 +147,7 @@ class PositionGuardianAgent:
                         run_id=str(run_id) if run_id else None,
                         risk_profile=risk_profile if isinstance(risk_profile, dict) else None,
                         base_probability=float(base_pred["proba_up"]) if base_pred else None,
+                        forecast_label=forecast_label,
                     )
                 )
             except Exception as exc:  # pragma: no cover
@@ -161,6 +167,7 @@ class PositionGuardianAgent:
             "proba_up": round(proba_up, 3),
             "should_alert": should_alert,
             "source": cand.source,
+            "forecast_label": cand.forecast_label,
         }
 
     def _estimate_probability(self, cand: GuardianCandidate, history: Dict[str, Dict[str, Any]]) -> tuple[float, float]:

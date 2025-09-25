@@ -171,6 +171,7 @@ def tool_run_models_and_ensemble(params: Dict[str, Any]) -> Dict[str, Any]:
         },
         "last_price": float(m.last_price),
         "atr": float(m.atr),
+        "atr_map": m.atr_map,
         "preds": preds,
     }
 

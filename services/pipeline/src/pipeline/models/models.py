@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from statsmodels.tsa.holtwinters import ExponentialSmoothing as HWES
 from statsmodels.tsa.arima.model import ARIMA
 
@@ -39,6 +39,7 @@ class ModelsOutput(BaseModel):
     preds: List[ModelPred]
     last_price: float
     atr: float
+    atr_map: Dict[str, float] = Field(default_factory=dict)
 
 
 def _load_prices(features_path_s3: str) -> pd.DataFrame:
@@ -121,6 +122,20 @@ def run(payload: ModelsInput) -> ModelsOutput:
     # Resample to 5-min to reduce noise/compute steps correctly
     close_5m = df["close"].resample("5min").last().dropna()
     atr = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else float(np.std(close_5m.diff().dropna()))
+    atr_map: Dict[str, float] = {}
+    for label in ("30m", "1h", "4h", "12h", "24h"):
+        col = f"atr_{label}"
+        if col in df.columns:
+            try:
+                atr_map[label] = float(df[col].iloc[-1])
+            except Exception:
+                continue
+    if "atr_dynamic" in df.columns:
+        try:
+            atr_map.setdefault("dynamic", float(df["atr_dynamic"].iloc[-1]))
+        except Exception:
+            pass
+    atr_map.setdefault("baseline", atr)
     last_price = float(close_5m.iloc[-1])
 
     horizon_steps = max(1, payload.horizon_minutes // 5)
@@ -207,4 +222,4 @@ def run(payload: ModelsInput) -> ModelsOutput:
     except Exception:
         pass
 
-    return ModelsOutput(preds=preds, last_price=last_price, atr=atr)
+    return ModelsOutput(preds=preds, last_price=last_price, atr=atr, atr_map=atr_map)

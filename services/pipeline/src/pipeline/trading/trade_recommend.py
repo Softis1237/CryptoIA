@@ -20,6 +20,7 @@ class TradeRecommendInput:
     interval_high: float
     proba_up: float
     atr: float
+    atr_map: Optional[Dict[str, float]] = None
     regime: Optional[str] = None
     volatility: Optional[float] = None
     account_equity: float = 1000.0
@@ -30,6 +31,7 @@ class TradeRecommendInput:
     tz_name: Optional[str] = None  # e.g. Asia/Jerusalem
     valid_for_minutes: int = 90
     horizon_minutes: Optional[int] = None
+    forecast_label: Optional[str] = None
     historical_target_minutes: Optional[List[float]] = None
     historical_stop_minutes: Optional[List[float]] = None
 
@@ -37,7 +39,6 @@ class TradeRecommendInput:
 def run(inp: TradeRecommendInput) -> Dict:
     p = inp.current_price
     target = inp.y_hat_4h
-    atr = max(1e-6, inp.atr)
 
     # Direction
     dir_is_long = (target > p and inp.proba_up >= 0.55)
@@ -67,6 +68,24 @@ def run(inp: TradeRecommendInput) -> Dict:
         rr_target = 1.6
     entry = p
 
+    forecast_minutes = 240
+    if inp.horizon_minutes and inp.horizon_minutes > 0:
+        try:
+            forecast_minutes = max(1, int(inp.horizon_minutes))
+        except Exception:
+            forecast_minutes = 240
+
+    try:
+        forecast_label = inp.forecast_label or minutes_to_horizon(forecast_minutes)
+    except Exception:
+        forecast_label = inp.forecast_label
+
+    atr = max(1e-6, inp.atr)
+    if inp.atr_map and forecast_label:
+        override_atr = inp.atr_map.get(forecast_label)
+        if override_atr:
+            atr = max(1e-6, float(override_atr))
+
     # Baseline volatility scaling (legacy heuristic retained as guard rail)
     vol_scale = min(1.0, max(0.2, (50.0 / max(1.0, atr))))
     if inp.regime == "trend_up" or inp.regime == "trend_down":
@@ -75,18 +94,13 @@ def run(inp: TradeRecommendInput) -> Dict:
         vol_scale = max(0.2, vol_scale * 0.8)
     fallback_leverage = float(min(inp.leverage_cap, max(1.0, inp.leverage_cap * vol_scale)))
 
-    forecast_minutes = 240
-    if inp.horizon_minutes and inp.horizon_minutes > 0:
-        try:
-            forecast_minutes = max(1, int(inp.horizon_minutes))
-        except Exception:
-            forecast_minutes = 240
-
     projected_rr = abs(target - p) / atr
     projected_rr = max(0.5, min(4.5, float(projected_rr)))
 
     risk_profile = None
     risk_notes: List[str] = []
+    if forecast_label:
+        risk_notes.append(f"atr_source:{forecast_label}")
     min_hold = 10 if forecast_minutes <= 60 else 20
     try:
         valid_window_baseline = max(10, int(inp.valid_for_minutes))
@@ -150,7 +164,12 @@ def run(inp: TradeRecommendInput) -> Dict:
         except Exception:
             horizon_end = None
 
-    reason_codes = ["directional_bias", f"regime:{inp.regime or 'n/a'}"]
+    horizon_code = forecast_label or f"{forecast_minutes}m"
+    reason_codes = [
+        "directional_bias",
+        f"regime:{inp.regime or 'n/a'}",
+        f"horizon:{horizon_code}",
+    ]
     if risk_profile:
         reason_codes.append("risk_dynamic")
         bucket_note = next((n for n in risk_profile.notes if n.startswith("bucket:")), None)
@@ -186,6 +205,10 @@ def run(inp: TradeRecommendInput) -> Dict:
         except Exception:
             profile_dict["forecast_label"] = str(forecast_minutes)
         profile_dict["notes"] = risk_notes
+        profile_dict["atr_used"] = {
+            "label": forecast_label,
+            "value": round(atr, 6),
+        }
         card["risk_profile"] = profile_dict
     else:
         card["risk_profile"] = {
@@ -193,6 +216,10 @@ def run(inp: TradeRecommendInput) -> Dict:
             "tp_distance": round(tp_dist, 6),
             "notes": risk_notes,
             "forecast_minutes": forecast_minutes,
+            "atr_used": {
+                "label": forecast_label,
+                "value": round(atr, 6),
+            },
         }
     # Optional portfolio policy overlay (no-op if disabled)
     try:

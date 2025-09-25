@@ -21,6 +21,7 @@ from ..infra.db import (
     insert_run_summary,
     fetch_latest_strategic_verdict,
     get_data_source_trust,
+    fetch_model_trust_regime,
 )
 from ..infra.s3 import download_bytes
 from ..mcp.client import call_tool
@@ -281,6 +282,7 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     # 6) Trade card
     last_price = float(out4.get("last_price", 0.0) or 0.0)
     atr = float(out4.get("atr", 0.0) or 0.0)
+    atr_map4 = out4.get("atr_map") or {}
     safe_mode = os.getenv("SAFE_MODE", "0") in {"1", "true", "True"}
     try:
         overrides = json.loads(os.getenv("SAFE_MODE_RISK_OVERRIDES", "{}"))
@@ -295,22 +297,34 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
             base_leverage = min(base_leverage, float(overrides["leverage_cap"]))
     planned_side = "LONG" if float(e4.get("y_hat", 0.0) or 0.0) >= 0 else "SHORT"
     arbiter = InvestmentArbiter()
+    try:
+        model_trust_4h = fetch_model_trust_regime(
+            str(regime.get("label") or "range"),
+            "4h",
+        )
+    except Exception:
+        model_trust_4h = {}
+
     arbiter_decision = arbiter.evaluate(
         base_proba_up=float(e4.get("proba_up", 0.5) or 0.5),
         side=planned_side,
         regime=str(regime.get("label")),
         lessons=guardian_lessons,
+        model_trust=model_trust_4h,
         risk_flags=risk_flags,
         safe_mode=safe_mode,
     )
     proba_for_trade = arbiter_decision.proba_up
+    atr_for_trade = float(atr_map4.get("4h", atr)) if isinstance(atr_map4, dict) else atr
+
     tri = TradeRecommendInput(
         current_price=last_price,
         y_hat_4h=float(e4.get("y_hat", 0.0) or 0.0),
         interval_low=float((e4.get("interval") or [0.0, 0.0])[0]),
         interval_high=float((e4.get("interval") or [0.0, 0.0])[1]),
         proba_up=proba_for_trade,
-        atr=atr,
+        atr=atr_for_trade,
+        atr_map=atr_map4 if isinstance(atr_map4, dict) else None,
         regime=str(regime.get("label")),
         account_equity=float(os.getenv("ACCOUNT_EQUITY", "1000")),
         risk_per_trade=base_risk,
@@ -319,6 +333,8 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         tz_name=os.getenv("TIMEZONE", "Europe/Moscow"),
         valid_for_minutes=90,
         horizon_minutes=240,
+        forecast_label="4h",
+        forecast_label="4h",
     )
     card = run_trade(tri)
     ok, reason = verify(

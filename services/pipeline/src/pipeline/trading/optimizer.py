@@ -308,11 +308,17 @@ def build_adaptive_risk_profile(
     rr_target = _clip(rr_target, 1.2, 4.5)
 
     leverage_factor = _interpolate(bucket.leverage_range, confidence)
+    if forecast_minutes <= 90:
+        leverage_factor *= 1.1
+    elif forecast_minutes >= 720:
+        leverage_factor *= 0.88
     if atr_pct > 0.012:
         leverage_factor *= _clip(1.0 - (atr_pct - 0.012) * 8.0, 0.4, 1.0)
     leverage_factor = _clip(leverage_factor, 0.2, 1.2)
 
     risk_multiplier = _interpolate(bucket.risk_range, confidence)
+    if forecast_minutes >= 720:
+        risk_multiplier *= 0.9
     if atr_pct > 0.02:
         risk_multiplier *= _clip(1.0 - (atr_pct - 0.02) * 5.0, 0.5, 1.0)
     risk_multiplier = _clip(risk_multiplier, 0.55, 1.35)

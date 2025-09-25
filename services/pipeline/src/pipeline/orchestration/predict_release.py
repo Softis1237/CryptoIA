@@ -28,6 +28,7 @@ from ..infra.db import (
     upsert_regime,
     upsert_scenarios,
     upsert_trade_suggestion,
+    fetch_model_trust_regime,
 )
 from ..infra.metrics import push_durations, push_values, timed
 from ..infra.obs import init_sentry
@@ -56,6 +57,7 @@ from ..trading.trade_recommend import TradeRecommendInput
 from ..trading.trade_recommend import run as run_trade
 from ..trading.verifier import verify
 from ..utils.calibration import calibrate_proba
+from ..utils.horizons import horizon_to_minutes
 
 
 def predict_release(
@@ -178,6 +180,7 @@ def predict_release(
         ("12h", horizon_hours_12h * 60),
         ("24h", 24 * 60),
     ]
+    horizon_minutes_map = {hz: minutes for hz, minutes in forecast_specs}
     model_outputs: Dict[str, ModelsOutput] = {}
     ensemble_outputs: Dict[str, EnsembleOutput] = {}
     for hz, minutes in forecast_specs:
@@ -205,20 +208,46 @@ def predict_release(
     e30 = ensemble_outputs.get("30m")
     e24 = ensemble_outputs.get("24h")
 
+    def _horizon_score(label: str, ensemble: EnsembleOutput | None) -> float:
+        if not ensemble:
+            return -1.0
+        proba = ensemble.proba_up
+        y_hat = ensemble.y_hat
+        if y_hat >= 0 and proba >= 0.5:
+            return proba - 0.5
+        if y_hat < 0 and proba <= 0.5:
+            return 0.5 - proba
+        return -1.0
+
+    primary_label = "4h"
+    primary_ensemble = e4
+    primary_models = m4
+    best_score = _horizon_score("4h", e4)
+    for label in ("30m", "12h"):
+        ens = ensemble_outputs.get(label)
+        score = _horizon_score(label, ens)
+        if score > best_score + 0.05 and ens is not None:
+            best_score = score
+            primary_label = label
+            primary_ensemble = ens
+            primary_models = model_outputs.get(label, primary_models)
+
+    primary_minutes = horizon_minutes_map.get(primary_label, horizon_hours_4h * 60)
+
     guardian_lessons: List[dict] = []
     guardian = MemoryGuardianAgent()
     try:
-        mg = guardian.query(
-            {
-                "scope": "trading",
-                "context": {
-                    "planned_signal": "BULLISH" if e4.y_hat >= 0 else "BEARISH",
-                    "market_regime": regime.label,
-                    "probability_up": e4.proba_up,
-                },
-                "top_k": 3,
-            }
-        )
+            mg = guardian.query(
+                {
+                    "scope": "trading",
+                    "context": {
+                        "planned_signal": "BULLISH" if primary_ensemble.y_hat >= 0 else "BEARISH",
+                        "market_regime": regime.label,
+                        "probability_up": primary_ensemble.proba_up,
+                    },
+                    "top_k": 3,
+                }
+            )
         guardian_lessons = (
             mg.output.get("lessons", []) if mg and isinstance(mg.output, dict) else []
         )
@@ -250,7 +279,7 @@ def predict_release(
         lessons = get_relevant_lessons({
             "regime": regime.label,
             "news": news_points,
-            "ta": {"atr": m4.atr, "interval": e4.interval},
+            "ta": {"atr": primary_models.atr, "interval": primary_ensemble.interval},
         })
     except Exception:
         lessons = []
@@ -262,40 +291,50 @@ def predict_release(
         if os.getenv("ENABLE_RAG", "0") in {"1", "true", "True"}:
             from ..knowledge.loader import search as _rag_search
 
-            q = f"Regime:{regime.label}; News:{'; '.join(news_points[:3])}; Patterns:{'; '.join(e4.rationale_points[:3])}"
+            q = f"Regime:{regime.label}; News:{'; '.join(news_points[:3])}; Patterns:{'; '.join(primary_ensemble.rationale_points[:3])}"
             hits = _rag_search(q, k=5)
             rag_points = [h.get("title") or (h.get("content") or "")[:80] for h in hits]
     except Exception:
         rag_points = []
 
     deb_text, risk_flags = debate(
-        rationale_points=e4.rationale_points,
+        rationale_points=primary_ensemble.rationale_points,
         regime=regime.label,
         news_top=news_points,
         neighbors=neighbors,
         lessons=guardian_lessons,
         knowledge=rag_points,
     )
-    expl_text = explain_short(e4.y_hat, e4.proba_up, news_points, e4.rationale_points)
+    expl_text = explain_short(primary_ensemble.y_hat, primary_ensemble.proba_up, news_points, primary_ensemble.rationale_points)
+
+    trust_label = primary_label if primary_label in {"30m", "4h", "12h", "24h"} else "4h"
+    try:
+        model_trust_primary = fetch_model_trust_regime(regime.label, trust_label)
+        if not model_trust_primary and trust_label != "4h":
+            model_trust_primary = fetch_model_trust_regime(regime.label, "4h")
+    except Exception:
+        model_trust_primary = {}
 
     arbiter_decision = arbiter.evaluate(
-        base_proba_up=e4.proba_up,
-        side="LONG" if e4.y_hat >= 0 else "SHORT",
+        base_proba_up=primary_ensemble.proba_up,
+        side="LONG" if primary_ensemble.y_hat >= 0 else "SHORT",
         regime=regime.label,
         lessons=guardian_lessons,
+        model_trust=model_trust_primary,
         risk_flags=risk_flags,
         safe_mode=os.getenv("SAFE_MODE", "0") in {"1", "true", "True"},
     )
 
-    # Trade recommendation (4h as primary)
+    # Trade recommendation (selected horizon)
     trade = run_trade(
         TradeRecommendInput(
-            current_price=m4.last_price,
-            y_hat_4h=e4.y_hat,
-            interval_low=e4.interval[0],
-            interval_high=e4.interval[1],
+            current_price=primary_models.last_price,
+            y_hat_4h=primary_ensemble.y_hat,
+            interval_low=primary_ensemble.interval[0],
+            interval_high=primary_ensemble.interval[1],
             proba_up=arbiter_decision.proba_up,
-            atr=m4.atr,
+            atr=float(primary_models.atr_map.get(primary_label, primary_models.atr) if isinstance(primary_models.atr_map, dict) else primary_models.atr),
+            atr_map=primary_models.atr_map,
             account_equity=1000.0,
             risk_per_trade=0.005,
             leverage_cap=25.0,
@@ -303,15 +342,16 @@ def predict_release(
             now_ts=int(now.timestamp()),
             tz_name=os.environ.get("TIMEZONE", "Asia/Jerusalem"),
             valid_for_minutes=90,
-            horizon_minutes=horizon_hours_4h * 60,
+            horizon_minutes=primary_minutes,
+            forecast_label=primary_label,
         )
     )
     ok, reason = verify(
         trade,
-        current_price=m4.last_price,
+        current_price=primary_models.last_price,
         leverage_cap=25.0,
-        interval=e4.interval,
-        atr=m4.atr,
+        interval=primary_ensemble.interval,
+        atr=primary_models.atr,
     )
 
     # News-aware veto: if high-impact recent news contradicts direction, mark NO-TRADE

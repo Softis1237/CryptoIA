@@ -41,6 +41,7 @@ class FeaturesCalcOutput(BaseModel):
 
 
 _INDICATOR_ROUTER = RegimeModelRouter()
+_HORIZON_WINDOWS_MIN = {"1h": 60, "4h": 240, "24h": 1440}
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
@@ -186,6 +187,19 @@ def _volume_profile_features(
         return {"vpoc_dev_pct": 0.0, "va_width_pct": 0.0}
 
 
+def _estimate_base_interval_minutes(ts_seconds: pd.Series) -> float:
+    try:
+        diffs = ts_seconds.astype(float).diff().dropna()
+        if diffs.empty:
+            return 5.0
+        median_sec = float(diffs.median())
+        if median_sec <= 0:
+            return 5.0
+        return max(0.5, median_sec / 60.0)
+    except Exception:
+        return 5.0
+
+
 def _select_indicator_config(df: pd.DataFrame, payload: FeaturesCalcInput) -> IndicatorConfig:
     close = df["close"].astype(float)
     ema_fast = close.ewm(span=20, adjust=False).mean()
@@ -283,6 +297,36 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
     df["slot_manual"] = 1 if slot == "manual" else 0
     df["slot_scheduled"] = 1 if slot == "scheduled" else 0
     df["slot_other"] = 1 if slot not in {"manual", "scheduled"} else 0
+
+    base_interval_min = _estimate_base_interval_minutes(df["ts"])
+    horizon_feature_cols: List[str] = []
+    for label, minutes in _HORIZON_WINDOWS_MIN.items():
+        try:
+            bars = max(1, int(round(minutes / max(base_interval_min, 1e-6))))
+        except Exception:
+            bars = max(1, minutes // 5 or 1)
+        ret_col = f"ret_{label}"
+        vol_col = f"vol_{label}_std"
+        atr_col = f"atr_{label}"
+        ema_col = f"ema_{label}"
+        pos_col = f"price_pos_{label}"
+
+        close_float = df["close"].astype(float)
+        df[ret_col] = close_float.pct_change(periods=bars).fillna(0.0)
+        df[vol_col] = (
+            close_float.pct_change().rolling(bars).std(ddof=0).fillna(method="bfill").fillna(0.0)
+        )
+        atr_period = max(14, bars)
+        try:
+            df[atr_col] = _atr(df, atr_period)
+        except Exception:
+            df[atr_col] = df["atr_dynamic"] if "atr_dynamic" in df.columns else _atr(df, 14)
+        df[ema_col] = _ema(close_float, span=max(2, min(bars, 400)))
+        df[pos_col] = (
+            (close_float - df[ema_col]) / (close_float.abs() + 1e-9)
+        ).fillna(0.0)
+
+        horizon_feature_cols.extend([ret_col, vol_col, atr_col, ema_col, pos_col])
 
     # News features (MVP: aggregate last N signals)
     pos = sum(1 for s in payload.news_signals if s.get("sentiment") == "positive")
@@ -678,6 +722,7 @@ def run(payload: FeaturesCalcInput) -> FeaturesCalcOutput:
         "sd_funding_rate",
         "sd_long_term_ratio",
         "sd_short_term_ratio",
+        *(horizon_feature_cols if "horizon_feature_cols" in locals() else []),
         # Technical pattern flags (if present)
         *([c for c in [
             "pat_hammer",

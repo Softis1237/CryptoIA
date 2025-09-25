@@ -232,7 +232,7 @@ SIMILAR_TOPK_LIMIT — сколько «соседей» учитывать пр
 
 ENABLE_CHALLENGER, CHALLENGER_MODE — активируют вторую ветку ансамбля (uniform/stacking) для A/B сравнения.
 
-ENABLE_RETRAIN, RETRAIN_INTERVAL_H, RETRAIN_FEATURES_S3, RETRAIN_HORIZONS — расписание и параметры переобучения ML моделей.
+ENABLE_RETRAIN, RETRAIN_INTERVAL_H, RETRAIN_FEATURES_S3, RETRAIN_HORIZONS — расписание и параметры переобучения ML моделей. Сборка формирует единый бандл для всех указанных горизонтов (по умолчанию `1h,4h,24h`).
 
 USE_DARTS, USE_DARTS_NBEATS, NBEATS_EPOCHS, USE_NEURALPROPHET, NP_EPOCHS, USE_PROPHET, USE_DARTS_PROPHET — активируют альтернативные временные модели. Настройки эпох позволяют ускорить тренировку.
 
