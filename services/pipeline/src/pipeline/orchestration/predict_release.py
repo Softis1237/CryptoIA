@@ -307,6 +307,8 @@ def predict_release(
     )
     expl_text = explain_short(primary_ensemble.y_hat, primary_ensemble.proba_up, news_points, primary_ensemble.rationale_points)
 
+    planned_side = "LONG" if primary_ensemble.y_hat >= 0 else "SHORT"
+    safe_mode_active = os.getenv("SAFE_MODE", "0") in {"1", "true", "True"}
     trust_label = primary_label if primary_label in {"30m", "4h", "12h", "24h"} else "4h"
     try:
         model_trust_primary = fetch_model_trust_regime(regime.label, trust_label)
@@ -315,15 +317,55 @@ def predict_release(
     except Exception:
         model_trust_primary = {}
 
-    arbiter_decision = arbiter.evaluate(
-        base_proba_up=primary_ensemble.proba_up,
-        side="LONG" if primary_ensemble.y_hat >= 0 else "SHORT",
-        regime=regime.label,
-        lessons=guardian_lessons,
-        model_trust=model_trust_primary,
-        risk_flags=risk_flags,
-        safe_mode=os.getenv("SAFE_MODE", "0") in {"1", "true", "True"},
+    def _serialize(items):
+        out = []
+        for item in items or []:
+            if isinstance(item, dict):
+                out.append(item)
+            elif hasattr(item, "model_dump"):
+                out.append(item.model_dump())  # type: ignore[attr-defined]
+            else:
+                payload = {k: getattr(item, k) for k in dir(item) if not k.startswith("_") and not callable(getattr(item, k))}
+                out.append(payload)
+        return out
+
+    context_payload = {
+        "regime": {"label": regime.label, "confidence": regime.confidence, "features": regime.features},
+        "news": _serialize(getattr(n_out, "news_signals", [])),
+        "onchain": _serialize(onchain_signals),
+        "neighbors": _serialize(neighbors),
+        "lessons_context": {
+            "scope": "trading",
+            "regime": regime.label,
+            "market_regime": regime.label,
+            "planned_signal": "BULLISH" if planned_side == "LONG" else "BEARISH",
+        },
+        "smc": {},
+        "advanced_ta": {},
+        "features_path_s3": f_out.features_path_s3,
+    }
+
+    arbiter_out = arbiter.decide(
+        {
+            "run_id": run_id,
+            "slot": slot,
+            "symbol": "BTC/USDT",
+            "planned_side": planned_side,
+            "regime_label": regime.label,
+            "lessons": guardian_lessons,
+            "model_trust": model_trust_primary,
+            "risk_flags": risk_flags,
+            "safe_mode": safe_mode_active,
+            "base_proba_up": float(primary_ensemble.proba_up),
+            "context_payload": context_payload,
+            "features_path_s3": f_out.features_path_s3,
+        }
     )
+
+    arbiter_decision = arbiter_out.evaluation
+    arbiter_analysis = arbiter_out.analysis
+    arbiter_critique = arbiter_out.critique
+    context_bundle = arbiter_out.context
 
     # Trade recommendation (selected horizon)
     trade = run_trade(
@@ -400,6 +442,10 @@ def predict_release(
         "success_probability": round(arbiter_decision.success_probability, 3),
         "risk_stance": arbiter_decision.risk_stance,
         "notes": arbiter_decision.notes,
+        "mode": arbiter_out.mode,
+        "analysis": arbiter_analysis.raw if arbiter_analysis else None,
+        "critique": arbiter_critique.raw if arbiter_critique else None,
+        "context_tokens": context_bundle.get("tokens_estimate"),
     }
 
     msg = []
@@ -421,6 +467,20 @@ def predict_release(
     msg.append(
         f"<b>Arbiter</b>: stance={arbiter_decision.risk_stance} (success={arbiter_decision.success_probability:.2f})"
     )
+    if arbiter_analysis:
+        msg.append(
+            f"<b>Аналитик</b>: {arbiter_analysis.scenario} @ {arbiter_analysis.probability_pct:.1f}% — {arbiter_analysis.explanation[:180]}"
+        )
+        if arbiter_analysis.contradictions:
+            msg.append(
+                "Противоречия: " + "; ".join(arbiter_analysis.contradictions[:3])
+            )
+    if arbiter_critique:
+        msg.append(
+            f"<b>Критика</b>: {arbiter_critique.recommendation} (Δ={arbiter_critique.probability_adjustment:+.1f} п.п.)"
+        )
+        if arbiter_critique.counterarguments:
+            msg.append("• " + arbiter_critique.counterarguments[0])
     if e30:
         price_ref = getattr(m30, "last_price", m4.last_price)
         atr_ref = getattr(m30, "atr", m4.atr)

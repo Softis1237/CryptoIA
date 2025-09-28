@@ -233,6 +233,11 @@ SIMILAR_TOPK_LIMIT — сколько «соседей» учитывать пр
 ENABLE_CHALLENGER, CHALLENGER_MODE — активируют вторую ветку ансамбля (uniform/stacking) для A/B сравнения.
 
 ENABLE_RETRAIN, RETRAIN_INTERVAL_H, RETRAIN_FEATURES_S3, RETRAIN_HORIZONS — расписание и параметры переобучения ML моделей. Сборка формирует единый бандл для всех указанных горизонтов (по умолчанию `1h,4h,24h`).
+CONTEXT_TOKENS_BUDGET — ограничение на размер оперативной памяти в токенах (дефолт 32000).
+CONTEXT_FETCH_TA / CONTEXT_FETCH_SMC — разрешить автоматический пересчёт продвинутого ТА и SMC при сборке контекста (`1`/`0`).
+ARB_ANALYST_ENABLED, ARB_ANALYST_AB_PERCENT — включение цепочки рассуждений и процент трафика, попадающий в новый контур.
+OPENAI_MODEL_ANALYST, OPENAI_MODEL_SELFCRIT — модели для CoT и самокритики (по умолчанию берутся из `OPENAI_MODEL_MASTER`).
+ENABLE_SELF_CRITIQUE — включает SelfCritiqueAgent (по умолчанию 1).
 
 USE_DARTS, USE_DARTS_NBEATS, NBEATS_EPOCHS, USE_NEURALPROPHET, NP_EPOCHS, USE_PROPHET, USE_DARTS_PROPHET — активируют альтернативные временные модели. Настройки эпох позволяют ускорить тренировку.
 

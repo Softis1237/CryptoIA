@@ -305,15 +305,41 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
     except Exception:
         model_trust_4h = {}
 
-    arbiter_decision = arbiter.evaluate(
-        base_proba_up=float(e4.get("proba_up", 0.5) or 0.5),
-        side=planned_side,
-        regime=str(regime.get("label")),
-        lessons=guardian_lessons,
-        model_trust=model_trust_4h,
-        risk_flags=risk_flags,
-        safe_mode=safe_mode,
+    context_payload = {
+        "regime": regime,
+        "news": news_signals,
+        "lessons_context": {
+            "scope": "trading",
+            "regime": regime.get("label"),
+            "market_regime": regime.get("label"),
+            "planned_signal": "BULLISH" if planned_side == "LONG" else "BEARISH",
+        },
+        "advanced_ta": {},
+        "smc": smc_snapshot,
+        "neighbors": topk,
+        "features_path_s3": features_s3,
+    }
+
+    arbiter_out = arbiter.decide(
+        {
+            "run_id": run_id,
+            "slot": slot,
+            "symbol": "BTC/USDT",
+            "planned_side": planned_side,
+            "regime_label": str(regime.get("label", "range")),
+            "lessons": guardian_lessons,
+            "model_trust": model_trust_4h,
+            "risk_flags": risk_flags,
+            "safe_mode": safe_mode,
+            "base_proba_up": float(e4.get("proba_up", 0.5) or 0.5),
+            "context_payload": context_payload,
+            "features_path_s3": features_s3,
+        }
     )
+
+    arbiter_decision = arbiter_out.evaluation
+    arbiter_analysis = arbiter_out.analysis
+    arbiter_critique = arbiter_out.critique
     proba_for_trade = arbiter_decision.proba_up
     atr_for_trade = float(atr_map4.get("4h", atr)) if isinstance(atr_map4, dict) else atr
 
@@ -333,7 +359,6 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         tz_name=os.getenv("TIMEZONE", "Europe/Moscow"),
         valid_for_minutes=90,
         horizon_minutes=240,
-        forecast_label="4h",
         forecast_label="4h",
     )
     card = run_trade(tri)
@@ -357,6 +382,9 @@ def run_master_flow(slot: str = "manual") -> Dict[str, Any]:
         "success_probability": round(arbiter_decision.success_probability, 3),
         "risk_stance": arbiter_decision.risk_stance,
         "notes": arbiter_decision.notes,
+        "mode": arbiter_out.mode,
+        "analysis": arbiter_analysis.raw if arbiter_analysis else None,
+        "critique": arbiter_critique.raw if arbiter_critique else None,
     }
     upsert_trade_suggestion(run_id, card)
 

@@ -85,7 +85,7 @@ WantedBy=multi-user.target
    PYTHONPATH=services/pipeline/src python -m pipeline.orchestration.master_orchestrator_agent
    ```
 3. Убедитесь, что в выводе присутствует `"safe_mode": true` и `risk_overrides` с пониженными значениями.
-
+о `pytest` 
 ## 4. Регрессионные проверки
 
 ### 4.1 Pytest
@@ -94,6 +94,13 @@ pytest services/pipeline/tests/test_dynamic_params.py \
        services/pipeline/tests/test_orchestrator_safe_mode.py \
        services/pipeline/tests/test_red_team_agent.py
 ```
+
+### 4.2 Аналитический совет (CoT)
+
+- `ARB_ANALYST_ENABLED=0` — полный откат к legacy-арбитер. Используйте при инцидентах с LLM.
+- `ARB_ANALYST_AB_PERCENT=50` — раскат цепочки рассуждений на 50% запусков (по run_id).
+- Метрики Prometheus: `context_builder_tokens`, `context_builder_latency_ms`, `investment-analyst_probability_pct`, `self-critique_probability_delta`.
+- Координаты логов (при включённых миграциях v3): таблицы `arbiter_reasoning`, `arbiter_selfcritique`.
 
 ### 4.2 Бэктест Красной Команды
 ```bash

@@ -8,8 +8,15 @@ probabilities to adjust the final conviction of trading recommendations.
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+import hashlib
+import json
+import os
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from ..reasoning.llm import call_openai_json
+from ..infra import metrics
+from .context_builder_agent import ContextBuilderAgent
+from .self_critique_agent import SelfCritiqueAgent
 from .strategic.trust import TrustMonitor
 
 
@@ -44,6 +51,39 @@ class ArbiterDecision:
     model_overrides: Dict[str, float] = field(default_factory=dict)
 
 
+@dataclass
+class AnalystReport:
+    scenario: str
+    probability_pct: float
+    macro_summary: str
+    technical_summary: str
+    contradictions: List[str]
+    explanation: str
+    raw: Dict[str, object]
+
+    def probability(self) -> float:
+        return _clamp(self.probability_pct / 100.0)
+
+
+@dataclass
+class CritiqueReport:
+    counterarguments: List[str]
+    invalidators: List[str]
+    missing_factors: List[str]
+    probability_adjustment: float
+    recommendation: str
+    raw: Dict[str, object]
+
+
+@dataclass
+class ArbiterFullDecision:
+    mode: str
+    analysis: AnalystReport | None
+    critique: CritiqueReport | None
+    evaluation: ArbiterDecision
+    context: Dict[str, object]
+
+
 class InvestmentArbiter:
     """Meta controller for risk acceptance and dynamic weighting."""
 
@@ -55,6 +95,9 @@ class InvestmentArbiter:
         lesson_weight: float = 0.08,
         trust_weight: float = 0.12,
         trust_monitor: TrustMonitor | None = None,
+        context_agent: ContextBuilderAgent | None = None,
+        critique_agent: SelfCritiqueAgent | None = None,
+        analyst_llm=call_openai_json,
     ) -> None:
         self.acceptance_threshold = acceptance_threshold
         self.high_bar = high_bar
@@ -62,6 +105,216 @@ class InvestmentArbiter:
         self.lesson_weight = lesson_weight
         self.trust_weight = trust_weight
         self._trust_monitor = trust_monitor or TrustMonitor()
+        self._context_agent = context_agent or ContextBuilderAgent()
+        self._critique_agent = critique_agent or SelfCritiqueAgent()
+        self._analyst_llm = analyst_llm
+
+    # ------------------------------------------------------------------
+    def decide(self, payload: dict) -> ArbiterFullDecision:
+        run_id = str(payload.get("run_id") or "manual")
+        planned_side = str(payload.get("planned_side") or "LONG").upper()
+        regime_label = str(payload.get("regime_label") or payload.get("regime", {}).get("label") or "range")
+        lessons = payload.get("lessons") or []
+        model_trust = payload.get("model_trust") or {}
+        risk_flags = payload.get("risk_flags") or []
+        safe_mode = bool(payload.get("safe_mode", False))
+        base_proba_up = float(payload.get("base_proba_up", 0.5) or 0.5)
+        context_payload = payload.get("context_payload") or {}
+        features_path_s3 = payload.get("features_path_s3")
+        if features_path_s3 and "features_path_s3" not in context_payload:
+            context_payload["features_path_s3"] = features_path_s3
+
+        mode = self._mode_for_run(run_id)
+        if mode == "legacy":
+            evaluation = self.evaluate(
+                base_proba_up=base_proba_up,
+                side=planned_side,
+                regime=regime_label,
+                lessons=lessons,
+                model_trust=model_trust,
+                risk_flags=risk_flags,
+                safe_mode=safe_mode,
+            )
+            return ArbiterFullDecision(
+                mode=mode,
+                analysis=None,
+                critique=None,
+                evaluation=evaluation,
+                context={},
+            )
+
+        context_payload.update(
+            {
+                "run_id": run_id,
+                "symbol": payload.get("symbol", "BTC/USDT"),
+                "slot": payload.get("slot", "arbiter"),
+            }
+        )
+        context_result = self._context_agent.run(context_payload)
+        context_bundle = context_result.output.get("context") if isinstance(context_result.output, dict) else {}
+        analysis = self._run_analyst(planned_side, base_proba_up, regime_label, context_bundle, payload)
+        critique = None
+        adjusted_prob = base_proba_up
+        if analysis:
+            if analysis.scenario == "LONG":
+                adjusted_prob = analysis.probability()
+            elif analysis.scenario == "SHORT":
+                adjusted_prob = 1.0 - analysis.probability()
+            else:
+                adjusted_prob = 0.5
+        if analysis and self._should_run_selfcritique():
+            critique = self._run_critique(analysis, context_bundle)
+            if critique:
+                adjusted_prob = _clamp(adjusted_prob + critique.probability_adjustment / 100.0)
+
+        evaluation = self.evaluate(
+            base_proba_up=adjusted_prob,
+            side=planned_side,
+            regime=regime_label,
+            lessons=lessons,
+            model_trust=model_trust,
+            risk_flags=risk_flags,
+            safe_mode=safe_mode,
+        )
+        if analysis:
+            evaluation.notes.append(f"analysis_scenario:{analysis.scenario}")
+        if critique:
+            evaluation.notes.append(f"critique:{critique.recommendation}")
+        return ArbiterFullDecision(
+            mode=mode,
+            analysis=analysis,
+            critique=critique,
+            evaluation=evaluation,
+            context=context_bundle,
+        )
+
+    def _mode_for_run(self, run_id: str) -> str:
+        if os.getenv("ARB_ANALYST_ENABLED", "1") not in {"1", "true", "True"}:
+            return "legacy"
+        percent_raw = os.getenv("ARB_ANALYST_AB_PERCENT", "100")
+        try:
+            percent = max(0, min(100, int(percent_raw)))
+        except Exception:
+            percent = 100
+        if percent >= 100:
+            return "modern"
+        digest = int(hashlib.sha256(run_id.encode("utf-8")).hexdigest(), 16)
+        bucket = digest % 100
+        return "modern" if bucket < percent else "legacy"
+
+    def _should_run_selfcritique(self) -> bool:
+        return os.getenv("ENABLE_SELF_CRITIQUE", "1") in {"1", "true", "True"}
+
+    def _run_analyst(
+        self,
+        planned_side: str,
+        base_proba_up: float,
+        regime_label: str,
+        context_bundle: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> AnalystReport | None:
+        try:
+            context_text = context_bundle.get("text") or ""
+            summary_section = context_bundle.get("summary") or {}
+            system_prompt = self._system_prompt()
+            user_prompt = self._user_prompt(
+                context_text,
+                summary_section,
+                regime_label,
+                planned_side,
+                base_proba_up,
+            )
+            model = os.getenv("OPENAI_MODEL_ANALYST", os.getenv("OPENAI_MODEL_MASTER"))
+            raw = self._analyst_llm(system_prompt, user_prompt, model=model, temperature=0.2)
+            report = self._parse_analyst_response(raw, planned_side, base_proba_up)
+            try:
+                metrics.push_values(
+                    job="investment-analyst",
+                    values={
+                        "probability_pct": float(report.probability_pct),
+                    },
+                    labels={"scenario": report.scenario, "regime": regime_label},
+                )
+            except Exception:
+                pass
+            return report
+        except Exception:
+            return None
+
+    def _run_critique(self, analysis: AnalystReport, context_bundle: Dict[str, Any]) -> CritiqueReport | None:
+        try:
+            res = self._critique_agent.run({"analysis": analysis.raw, "context": context_bundle})
+            out = res.output if isinstance(res.output, dict) else {}
+            return CritiqueReport(
+                counterarguments=[str(x) for x in out.get("counterarguments", [])],
+                invalidators=[str(x) for x in out.get("invalidators", [])],
+                missing_factors=[str(x) for x in out.get("missing_factors", [])],
+                probability_adjustment=float(out.get("probability_adjustment", 0.0)),
+                recommendation=str(out.get("recommendation", "REVISE")),
+                raw=out,
+            )
+        except Exception:
+            return None
+
+    def _system_prompt(self) -> str:
+        return (
+            "Ты — главный инвестиционный аналитик в хедж-фонде. Проанализируй предоставленный контекст"
+            " последовательно и верни JSON с полями: scenario (LONG/SHORT/FLAT), probability_pct (float),"
+            " macro_summary, technical_summary, contradictions (list[str]), explanation (string)."
+            " Соблюдай шаги: анализ контекста, технический синтез, поиск противоречий, формулировка гипотезы,"
+            " оценка вероятности. Если есть серьёзные противоречия, вероятность не выше 80." )
+
+    def _user_prompt(
+        self,
+        context_text: str,
+        summary_section: Dict[str, Any],
+        regime_label: str,
+        planned_side: str,
+        base_proba_up: float,
+    ) -> str:
+        return (
+            f"Текущий режим: {regime_label}. Планируемая сторона: {planned_side}."
+            f" Базовая вероятность моделей: {base_proba_up*100:.1f}%.\n"
+            "Полный контекст ниже: \n"
+            f"{context_text}"
+        )
+
+    def _parse_analyst_response(
+        self,
+        raw: Dict[str, Any],
+        planned_side: str,
+        base_proba_up: float,
+    ) -> AnalystReport:
+        if not raw or raw.get("status") == "error":
+            default_prob = base_proba_up * 100 if planned_side == "LONG" else (1.0 - base_proba_up) * 100
+            return AnalystReport(
+                scenario=planned_side,
+                probability_pct=float(round(default_prob, 2)),
+                macro_summary="LLM недоступен — используем базовый сигнал.",
+                technical_summary="",
+                contradictions=[],
+                explanation="Fallback без LLM",
+                raw={"fallback": True, "input": raw},
+            )
+        scenario = str(raw.get("scenario") or planned_side).upper()
+        prob = raw.get("probability_pct") or raw.get("probability") or 0.0
+        try:
+            prob = float(prob)
+        except Exception:
+            prob = base_proba_up * 100
+        macro = raw.get("macro_summary") or raw.get("macro") or ""
+        technical = raw.get("technical_summary") or raw.get("technical") or ""
+        contradictions = [str(x) for x in raw.get("contradictions") or []]
+        explanation = raw.get("explanation") or raw.get("rationale") or ""
+        return AnalystReport(
+            scenario=scenario,
+            probability_pct=float(prob),
+            macro_summary=str(macro),
+            technical_summary=str(technical),
+            contradictions=contradictions,
+            explanation=str(explanation),
+            raw=raw,
+        )
 
     def evaluate(
         self,

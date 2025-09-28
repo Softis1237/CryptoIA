@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pipeline.agents.investment_arbiter import InvestmentArbiter
+from pipeline.agents.base import AgentResult
 
 
 def test_arbiter_penalizes_negative_lessons():
@@ -45,6 +46,67 @@ def test_arbiter_flags_risk_on_above_threshold():
     )
     assert decision.risk_stance == "risk_on"
     assert decision.confidence_floor is not None
+
+
+def test_arbiter_decide_with_context():
+    class StubContext:
+        def run(self, payload):
+            return AgentResult(
+                name="context", ok=True, output={"context": {"text": "macro", "summary": {"body": "ok"}, "tokens_estimate": 256}}
+            )
+
+    class StubCritique:
+        def run(self, payload):
+            return AgentResult(
+                name="critique",
+                ok=True,
+                output={
+                    "counterarguments": ["объём падает"],
+                    "invalidators": ["пробой 60k"],
+                    "missing_factors": [],
+                    "probability_adjustment": -5,
+                    "recommendation": "REVISE",
+                },
+            )
+
+    def fake_llm(system_prompt, user_prompt, model=None, temperature=0.2):
+        return {
+            "scenario": "LONG",
+            "probability_pct": 68,
+            "macro_summary": "ETF приток",
+            "technical_summary": "Цена у поддержки",
+            "contradictions": ["новости бычьи, но объём падает"],
+            "explanation": "Приток средств компенсирует продажи",
+        }
+
+    arbiter = InvestmentArbiter(
+        trust_weight=0.0,
+        lesson_weight=0.0,
+        context_agent=StubContext(),
+        critique_agent=StubCritique(),
+        analyst_llm=fake_llm,
+    )
+
+    out = arbiter.decide(
+        {
+            "run_id": "test",
+            "slot": "manual",
+            "symbol": "BTC/USDT",
+            "planned_side": "LONG",
+            "regime_label": "trend_up",
+            "lessons": [],
+            "model_trust": {},
+            "risk_flags": [],
+            "safe_mode": False,
+            "base_proba_up": 0.6,
+            "context_payload": {},
+        }
+    )
+    assert out.analysis is not None
+    assert out.analysis.scenario == "LONG"
+    assert out.critique is not None
+    assert out.evaluation.risk_stance in {"risk_on", "risk_watch"}
+    assert any(note.startswith("analysis_scenario") for note in out.evaluation.notes)
 
 
 def test_arbiter_accounts_for_trust_weights():
