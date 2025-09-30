@@ -787,6 +787,41 @@ def upsert_trade_suggestion(run_id: str, card: dict) -> None:
     logger.info(f"Saved trade suggestion for {run_id}")
 
 
+def fetch_agent_performance(regime_label: str | None = None) -> dict[str, float]:
+    sql = "SELECT agent_name, regime_label, weight FROM agent_performance"
+    params: tuple = ()
+    if regime_label:
+        sql += " WHERE regime_label=%s"
+        params = (regime_label,)
+    out: dict[str, float] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall() or []
+            for agent, regime, weight in rows:
+                key = f"{agent}:{regime}" if regime_label is None else agent
+                out[key] = float(weight or 1.0)
+    return out
+
+
+def upsert_agent_performance(
+    agent_name: str,
+    regime_label: str,
+    wins: int,
+    losses: int,
+    weight: float,
+) -> None:
+    sql = (
+        "INSERT INTO agent_performance (agent_name, regime_label, wins, losses, weight) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (agent_name, regime_label) DO UPDATE SET wins=EXCLUDED.wins, "
+        "losses=EXCLUDED.losses, weight=EXCLUDED.weight, updated_at=now()"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (agent_name, regime_label, wins, losses, weight))
+
+
 def upsert_arbiter_reasoning(
     run_id: str,
     mode: str,

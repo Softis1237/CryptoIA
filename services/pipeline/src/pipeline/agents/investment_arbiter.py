@@ -16,9 +16,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..reasoning.llm import call_openai_json
 from ..infra import metrics
+from ..infra.db import fetch_agent_performance
 from .context_builder_agent import ContextBuilderAgent
 from .self_critique_agent import SelfCritiqueAgent
 from .strategic.trust import TrustMonitor
+from loguru import logger
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -61,6 +63,8 @@ class AnalystReport:
     contradictions: List[str]
     explanation: str
     raw: Dict[str, object]
+    warnings: List[str] = field(default_factory=list)
+    warnings: List[str]
 
     def probability(self) -> float:
         return _clamp(self.probability_pct / 100.0)
@@ -74,6 +78,8 @@ class CritiqueReport:
     probability_adjustment: float
     recommendation: str
     raw: Dict[str, object]
+    warnings: List[str] = field(default_factory=list)
+    warnings: List[str]
 
 
 @dataclass
@@ -153,6 +159,7 @@ class InvestmentArbiter:
         )
         context_result = self._context_agent.run(context_payload)
         context_bundle = context_result.output.get("context") if isinstance(context_result.output, dict) else {}
+        active_agents = self._extract_active_agents(context_bundle)
         analysis = self._run_analyst(planned_side, base_proba_up, regime_label, context_bundle, payload)
         critique = None
         adjusted_prob = base_proba_up
@@ -163,24 +170,36 @@ class InvestmentArbiter:
                 adjusted_prob = 1.0 - analysis.probability()
             else:
                 adjusted_prob = 0.5
+            if analysis.warnings:
+                warn_factor = float(os.getenv("ARB_WARNING_CONF_FACTOR", "0.9"))
+                adjusted_prob = _clamp(adjusted_prob * warn_factor)
         if analysis and self._should_run_selfcritique():
             critique = self._run_critique(analysis, context_bundle)
             if critique:
                 adjusted_prob = _clamp(adjusted_prob + critique.probability_adjustment / 100.0)
+                if critique.warnings:
+                    warn_factor = float(os.getenv("ARB_WARNING_CONF_FACTOR", "0.9"))
+                    adjusted_prob = _clamp(adjusted_prob * warn_factor)
+
+        dynamic_agent_weights = self._dynamic_agent_weights(regime_label, active_agents)
 
         evaluation = self.evaluate(
             base_proba_up=adjusted_prob,
             side=planned_side,
             regime=regime_label,
             lessons=lessons,
-            model_trust=model_trust,
+            model_trust=self._merge_agent_weights(model_trust, dynamic_agent_weights),
             risk_flags=risk_flags,
             safe_mode=safe_mode,
         )
         if analysis:
             evaluation.notes.append(f"analysis_scenario:{analysis.scenario}")
+            if analysis.warnings:
+                evaluation.notes.extend([f"analysis_warn:{w}" for w in analysis.warnings])
         if critique:
             evaluation.notes.append(f"critique:{critique.recommendation}")
+            if critique.warnings:
+                evaluation.notes.extend([f"critique_warn:{w}" for w in critique.warnings])
 
         context_hash = None
         tokens_estimate = None
@@ -296,9 +315,19 @@ class InvestmentArbiter:
             if not raw or raw.get("status") == "error":
                 return None
             from ..reasoning.schemas import ArbiterAnalystResponse
+            from ..reasoning.validators import validate_analyst
 
             parsed = ArbiterAnalystResponse(**raw).sanitized()
+            warnings = validate_analyst(parsed)
+            strict = os.getenv("ARB_STRICT_VALIDATION", "0") in {"1", "true", "True"}
+            if warnings:
+                logger.warning("Analyst validation warnings: %s", warnings)
+                if strict:
+                    logger.warning("Strict validation triggered. Falling back to legacy.")
+                    return None
             report = self._parse_analyst_response(parsed.model_dump(), planned_side, base_proba_up)
+            if warnings:
+                report.warnings = list(warnings)
             try:
                 metrics.push_values(
                     job="investment-analyst",
@@ -318,8 +347,16 @@ class InvestmentArbiter:
             res = self._critique_agent.run({"analysis": analysis.raw, "context": context_bundle})
             out = res.output if isinstance(res.output, dict) else {}
             from ..reasoning.schemas import CritiqueResponse
+            from ..reasoning.validators import validate_critique
 
             parsed = CritiqueResponse(**out).sanitized()
+            warnings_list = validate_critique(parsed)
+            strict = os.getenv("ARB_STRICT_VALIDATION", "0") in {"1", "true", "True"}
+            if warnings_list:
+                logger.warning("Critique validation warnings: %s", warnings_list)
+                if strict:
+                    logger.warning("Strict critique validation triggered. Ignoring critique")
+                    return None
             out = parsed.model_dump()
             return CritiqueReport(
                 counterarguments=[str(x) for x in out.get("counterarguments", [])],
@@ -328,6 +365,7 @@ class InvestmentArbiter:
                 probability_adjustment=float(out.get("probability_adjustment", 0.0)),
                 recommendation=str(out.get("recommendation", "REVISE")),
                 raw=out,
+                warnings=list(warnings_list),
             )
         except Exception:
             return None
@@ -371,6 +409,7 @@ class InvestmentArbiter:
                 contradictions=[],
                 explanation="Fallback без LLM",
                 raw={"fallback": True, "input": raw},
+                warnings=[],
             )
         scenario = str(raw.get("scenario") or planned_side).upper()
         prob = raw.get("probability_pct") or raw.get("probability") or 0.0
@@ -390,7 +429,56 @@ class InvestmentArbiter:
             contradictions=contradictions,
             explanation=str(explanation),
             raw=raw,
+            warnings=[],
         )
+
+    def _merge_agent_weights(
+        self,
+        model_trust: Mapping[str, float] | None,
+        agent_weights: Mapping[str, float],
+    ) -> Dict[str, float]:
+        out = dict(model_trust or {})
+        for agent, weight in agent_weights.items():
+            key = f"agent:{agent}"
+            out[key] = weight
+        return out
+
+    def _dynamic_agent_weights(
+        self,
+        regime_label: str,
+        agents: List[str],
+    ) -> Dict[str, float]:
+        if not agents:
+            return {}
+        weights = fetch_agent_performance(regime_label)
+        if not weights:
+            return {}
+        out: Dict[str, float] = {}
+        for agent in agents:
+            agent_weight = weights.get(agent)
+            if agent_weight is not None:
+                out[agent] = float(agent_weight)
+        return out
+
+    def _extract_active_agents(self, context_bundle: Dict[str, Any]) -> List[str]:
+        sections = context_bundle.get("sections") or []
+        mapping = {
+            "новости": "news",
+            "macro": "news",
+            "макро": "news",
+            "ончейн": "onchain",
+            "уроки": "lessons",
+            "smc": "smc",
+            "фибоначчи": "advanced_ta",
+            "похожие": "similarity",
+        }
+        active: set[str] = set()
+        for section in sections:
+            title = str(section.get("title", "")).lower()
+            for key, agent in mapping.items():
+                if key in title:
+                    active.add(agent)
+        return sorted(active)
 
     def evaluate(
         self,

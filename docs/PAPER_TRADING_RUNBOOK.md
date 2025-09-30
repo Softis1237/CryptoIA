@@ -41,7 +41,7 @@ ExecStart=/usr/bin/python -m pipeline.orchestration.predict_release --slot=paper
 | Частота | Действие |
 |---------|----------|
 | Ежедневно | Смотрите уведомления Telegram, проверяйте P&L. |
-| Каждую неделю | Делайте выборку reasoning/critique и проводите ретроспективу качества. |
+| Каждую неделю | Делайте выборку reasoning/critique, проводите ретроспективу качества, запускайте `python services/pipeline/ops/paper_summary.py --days 30` и фиксируйте PnL. |
 | Ежемесячно | Запускайте backtest на последних данных для сверки. |
 
 ## 6. Критерии готовности к живой торговле

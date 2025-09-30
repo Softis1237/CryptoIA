@@ -103,12 +103,21 @@ pytest services/pipeline/tests/test_dynamic_params.py \
 - Метрики Prometheus: `context_builder_tokens`, `context_builder_latency_ms`, `investment-analyst_probability_pct`, `self-critique_probability_delta`.
 - Координаты логов (при включённых миграциях v3): таблицы `arbiter_reasoning`, `arbiter_selfcritique`, S3 `runs/<date>/<slot>/arbiter/`.
 - Памятки: промпт-тюнинг — `docs/ANALYST_TUNING_GUIDE.md`, контроль LLM — `docs/LLM_FAILSAFE.md`.
+- Управление весами агентов — `services/pipeline/ops/update_agent_performance.py` + таблица `agent_performance` (миграция 045).
 
 ### 4.3 Бэктест и бумажная торговля
 
 - Полная инструкция: `docs/BACKTEST_RUNBOOK.md`.
 - Paper trading: `docs/PAPER_TRADING_RUNBOOK.md`.
 - Live-cutover: `docs/LIVE_TRADING_CHECKLIST.md`.
+- Динамика весов агентов: запускайте `python services/pipeline/ops/recompute_agent_performance.py --days 180` по cron (пример unit-файла в `docs/LOGGING_GUIDE.md`).
+- Логи: `agent_performance` (таблица), метрика `agent_performance_weight`. Алерт: «weight < 0.8» → проверить точность конкретного агента.
+- Пример cron (еженедельно):
+  ```cron
+  0 3 * * 1 /opt/cryptoia/ops/cron/recompute_agent_performance.sh >> /var/log/cryptoia/cron.log 2>&1
+  0 4 * * * /opt/cryptoia/ops/cron/forecast_quality.sh >> /var/log/cryptoia/cron.log 2>&1
+  ```
+- После запусков проверяйте дашборд `forecast_quality` (см. `docs/OBSERVABILITY.md`).
 
 ### 4.2 Бэктест Красной Команды
 ```bash

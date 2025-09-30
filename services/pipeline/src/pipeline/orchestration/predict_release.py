@@ -481,12 +481,20 @@ def predict_release(
             msg.append(
                 "• Противоречия: " + "; ".join(arbiter_analysis.contradictions[:2])
             )
+        if getattr(arbiter_analysis, "warnings", None):
+            msg.append(
+                "• Предупреждения: " + ", ".join(arbiter_analysis.warnings[:2])
+            )
     if arbiter_critique:
         msg.append(
             f"<b>Критика</b>: {arbiter_critique.recommendation} (Δ={arbiter_critique.probability_adjustment:+.1f} п.п.)"
         )
         if arbiter_critique.counterarguments:
             msg.append("• " + arbiter_critique.counterarguments[0])
+        if getattr(arbiter_critique, "warnings", None):
+            msg.append(
+                "• Предупреждения критика: " + ", ".join(arbiter_critique.warnings[:2])
+            )
     if e30:
         price_ref = getattr(m30, "last_price", m4.last_price)
         atr_ref = getattr(m30, "atr", m4.atr)

@@ -135,3 +135,62 @@ def test_arbiter_accounts_for_trust_weights():
     )
     assert decision_high.success_probability > decision_low.success_probability
     assert any(note.startswith("trust_") for note in decision_high.notes)
+
+
+def test_arbiter_warning_reduces_probability(monkeypatch):
+    class StubContext:
+        def run(self, payload):
+            return AgentResult(
+                name="context",
+                ok=True,
+                output={"context": {"text": "macro", "summary": {"body": "ok"}, "tokens_estimate": 256}},
+            )
+
+    class StubCritique:
+        def run(self, payload):
+            return AgentResult(
+                name="critique",
+                ok=True,
+                output={
+                    "counterarguments": [""],
+                    "invalidators": [],
+                    "missing_factors": [],
+                    "probability_adjustment": 0,
+                    "recommendation": "CONFIRM",
+                },
+            )
+
+    def fake_llm(system_prompt, user_prompt, model=None, temperature=0.2):
+        return {
+            "scenario": "LONG",
+            "probability_pct": 70,
+            "macro_summary": "short",
+            "technical_summary": "short",
+            "contradictions": ["strong resistance"],
+            "explanation": "",
+        }
+
+    arbiter = InvestmentArbiter(
+        context_agent=StubContext(),
+        critique_agent=StubCritique(),
+        analyst_llm=fake_llm,
+    )
+
+    out = arbiter.decide(
+        {
+            "run_id": "warn",
+            "slot": "manual",
+            "symbol": "BTC/USDT",
+            "planned_side": "LONG",
+            "regime_label": "trend_up",
+            "lessons": [],
+            "model_trust": {},
+            "risk_flags": [],
+            "safe_mode": False,
+            "base_proba_up": 0.6,
+            "context_payload": {},
+        }
+    )
+    # warnings should cause probability drop relative to baseline 0.6
+    assert out.evaluation.success_probability < 0.6
+    assert any(note.startswith("analysis_warn") for note in out.evaluation.notes)

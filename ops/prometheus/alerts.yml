@@ -1,143 +1,28 @@
 groups:
-  - name: pipeline_alerts
+  - name: llm
     rules:
-      - alert: PipelineDurationHigh
-        expr: pipeline_step_seconds{job="release_flow"} > 300
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          description: "Step {{ $labels.step }} exceeds 5m"
-      - alert: NoTradeSpike
-        expr: sum_over_time(pipeline_value{name="no_trade"}[30m]) > 20
-        for: 1m
-        labels:
-          severity: warning
-        annotations:
-          description: "High count of NO-TRADE in last 30m"
-      - alert: ValidationErrors
-        expr: pipeline_value{name="validation_errs"} > 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          description: "Validation errors detected"
-      - alert: HighVaR
-        expr: pipeline_value{name="risk_VaR95"} > 0.02
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          description: "High portfolio VaR95 > 2%"
-      - alert: CVSmapeHigh4h
-        expr: pipeline_value{name="cv_smape_4h"} > 0.18
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "4h sMAPE degraded (>0.18)"
-      - alert: CVSmapeHigh12h
-        expr: pipeline_value{name="cv_smape_12h"} > 0.24
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "12h sMAPE degraded (>0.24)"
-      - alert: CVDirectionLow4h
-        expr: pipeline_value{name="cv_da_4h"} < 0.52
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "4h directional accuracy below 52%"
-      - alert: CVDirectionLow12h
-        expr: pipeline_value{name="cv_da_12h"} < 0.52
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "12h directional accuracy below 52%"
-      - alert: OutcomesSmapeHigh4h
-        expr: pipeline_value{name="smape_4h"} > 0.18
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "Outcomes 4h sMAPE degraded (>0.18)"
-      - alert: OutcomesSmapeHigh12h
-        expr: pipeline_value{name="smape_12h"} > 0.24
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "Outcomes 12h sMAPE degraded (>0.24)"
-      - alert: OutcomesDALow4h
-        expr: pipeline_value{name="da_4h"} < 0.52
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "Outcomes 4h directional accuracy below 52%"
-      - alert: OutcomesDALow12h
-        expr: pipeline_value{name="da_12h"} < 0.52
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          description: "Outcomes 12h directional accuracy below 52%"
-      - alert: ABDivergenceHigh
-        expr: pipeline_value{name="ab_div_4h_abs"} > 300 or pipeline_value{name="ab_div_12h_abs"} > 500
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          description: "High A/B divergence between challenger and champion"
-      - alert: RiskPolicyNotOK
-        expr: pipeline_value{name="risk_policy_ok"} < 1
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          description: "Risk policy status not OK"
-      - alert: LLMCostHigh
-        expr: pipeline_value{name="llm_calls"} > 10
-        for: 10m
-        labels:
-          severity: info
-        annotations:
-          description: "LLM calls above budget"
-      - alert: LLMFailures
-        expr: pipeline_value{name="llm_failures"} > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          description: "LLM failures detected"
-      - alert: FlowiseDown
-        expr: up{job="flowise"} == 0
+      - alert: LLMFailuresBurst
+        expr: increase(llm_failures[15m]) > 3
         for: 5m
         labels:
           severity: critical
         annotations:
-          description: "Flowise service is down"
-      - alert: PaperPnLNegative
-        expr: pipeline_value{name="pnl_24h"} < 0
-        for: 60m
-        labels:
-          severity: info
-        annotations:
-          description: "Paper trading PnL over last 24h is negative"
-      - alert: NewsCountLow
-        expr: pipeline_value{name="news_count"} < 3
-        for: 120m
+          summary: "LLM failures spike"
+          description: "Check OpenAI/Flowise availability"
+      - alert: LLMValidationWarnings
+        expr: increase(llm_validation{type="analyst"}[30m]) > 5
         labels:
           severity: warning
         annotations:
-          description: "Too few news items ingested in the last releases"
-      - alert: RSSFailuresHigh
-        expr: pipeline_value{name="rss_fail"} > 5
+          summary: "LLM validation warnings"
+          description: "Analyst outputs contain repeated issues"
+  - name: forecast
+    rules:
+      - alert: ForecastQualityDegradation
+        expr: forecast_quality_smape > 0.12
         for: 30m
         labels:
           severity: warning
         annotations:
-          description: "High count of failed RSS sources in ingest"
+          summary: "SMAPE exceeds threshold"
+          description: "Investigate recent forecasts"

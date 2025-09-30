@@ -13,6 +13,7 @@
 
 - В `InvestmentArbiter._run_analyst/_run_critique` используется `ArbiterAnalystResponse` / `CritiqueResponse`.
 - При ошибке парсинга — возврат `None`, что переводит запуск в legacy-режим без LLM-влияния.
+- Предупреждения валидаторов (короткие ответы, противоречия) фиксируются и уменьшают confidence через коэффициент `ARB_WARNING_CONF_FACTOR` (по умолчанию 0.9). При `ARB_STRICT_VALIDATION=1` ответ полностью отклоняется.
 - В `debate`/`multi_debate` (см. `reasoning/debate_arbiter.py`) рекомендуется:
   1. Парсить ответ через Pydantic.
   2. При ошибке — fallback на список аргументов из модели.
