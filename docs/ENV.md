@@ -238,6 +238,8 @@ CONTEXT_FETCH_TA / CONTEXT_FETCH_SMC — разрешить автоматич�
 ARB_ANALYST_ENABLED, ARB_ANALYST_AB_PERCENT — включение цепочки рассуждений и процент трафика, попадающий в новый контур.
 OPENAI_MODEL_ANALYST, OPENAI_MODEL_SELFCRIT — модели для CoT и самокритики (по умолчанию берутся из `OPENAI_MODEL_MASTER`).
 ENABLE_SELF_CRITIQUE — включает SelfCritiqueAgent (по умолчанию 1).
+ARB_LOG_TO_DB — сохранять CoT/самокритику в таблицы `arbiter_reasoning`/`arbiter_selfcritique` (`1`/`0`).
+ARB_STORE_S3 — выгружать объединённый JSON анализа в S3 (`1`/`0`).
 
 USE_DARTS, USE_DARTS_NBEATS, NBEATS_EPOCHS, USE_NEURALPROPHET, NP_EPOCHS, USE_PROPHET, USE_DARTS_PROPHET — активируют альтернативные временные модели. Настройки эпох позволяют ускорить тренировку.
 

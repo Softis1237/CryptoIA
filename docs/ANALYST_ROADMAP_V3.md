@@ -74,4 +74,6 @@
 - Таблица `arbiter_reasoning` (run_id, created_at, context_ref, analysis_json, tokens, mode).
 - Таблица `arbiter_selfcritique` (run_id, created_at, recommendation, delta_pct, payload_json).
 
+Миграция `044_arbiter_reasoning.sql` добавлена в репозиторий; выполните её перед включением нового контура.
+
 Эти миграции описаны в backlog и будут добавлены по мере внедрения.

@@ -20,6 +20,7 @@
    psql "$DATABASE_URL" -f migrations/041_data_sources.sql
    psql "$DATABASE_URL" -f migrations/042_structured_memory.sql
    psql "$DATABASE_URL" -f migrations/043_orchestrator_events.sql
+   psql "$DATABASE_URL" -f migrations/044_arbiter_reasoning.sql
    ```
 
 3. Обучите и установите модели динамических индикаторов:

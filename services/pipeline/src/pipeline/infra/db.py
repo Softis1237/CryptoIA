@@ -787,6 +787,59 @@ def upsert_trade_suggestion(run_id: str, card: dict) -> None:
     logger.info(f"Saved trade suggestion for {run_id}")
 
 
+def upsert_arbiter_reasoning(
+    run_id: str,
+    mode: str,
+    analysis: dict,
+    context: dict | None = None,
+    tokens_estimate: float | None = None,
+    context_ref: str | None = None,
+    s3_path: str | None = None,
+) -> None:
+    from psycopg2.extras import Json as _Json
+
+    sql = (
+        "INSERT INTO arbiter_reasoning (run_id, mode, analysis, context, tokens_estimate, context_ref, s3_path) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (run_id) DO UPDATE SET mode=EXCLUDED.mode, analysis=EXCLUDED.analysis, "
+        "context=EXCLUDED.context, tokens_estimate=EXCLUDED.tokens_estimate, context_ref=EXCLUDED.context_ref, "
+        "s3_path=EXCLUDED.s3_path, created_at=now()"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    run_id,
+                    mode,
+                    _Json(analysis or {}),
+                    _Json(context or {}),
+                    tokens_estimate,
+                    context_ref,
+                    s3_path,
+                ),
+            )
+
+
+def upsert_arbiter_selfcritique(
+    run_id: str,
+    recommendation: str | None,
+    probability_delta: float | None,
+    payload: dict,
+) -> None:
+    from psycopg2.extras import Json as _Json
+
+    sql = (
+        "INSERT INTO arbiter_selfcritique (run_id, recommendation, probability_delta, critique) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (run_id) DO UPDATE SET recommendation=EXCLUDED.recommendation, "
+        "probability_delta=EXCLUDED.probability_delta, critique=EXCLUDED.critique, created_at=now()"
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (run_id, recommendation, probability_delta, _Json(payload or {})))
+
+
 def upsert_regime(
     run_id: str, label: str, confidence: float, regime_features: dict
 ) -> None:

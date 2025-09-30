@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..reasoning.llm import call_openai_json
@@ -180,6 +181,72 @@ class InvestmentArbiter:
             evaluation.notes.append(f"analysis_scenario:{analysis.scenario}")
         if critique:
             evaluation.notes.append(f"critique:{critique.recommendation}")
+
+        context_hash = None
+        tokens_estimate = None
+        if context_bundle:
+            try:
+                tokens_estimate = float(context_bundle.get("tokens_estimate"))
+            except Exception:
+                tokens_estimate = None
+            try:
+                context_hash = hashlib.sha256(
+                    json.dumps(context_bundle, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                context_hash = None
+
+        s3_path = None
+        if context_bundle and os.getenv("ARB_STORE_S3", "1") in {"1", "true", "True"}:
+            try:
+                from ..infra.s3 import upload_bytes
+
+                payload_s3 = {
+                    "run_id": run_id,
+                    "mode": mode,
+                    "analysis": analysis.raw if analysis else None,
+                    "critique": critique.raw if critique else None,
+                    "evaluation": {
+                        "success_probability": evaluation.success_probability,
+                        "risk_stance": evaluation.risk_stance,
+                        "notes": evaluation.notes,
+                    },
+                    "context": context_bundle,
+                }
+                date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                slot = payload.get("slot", "arbiter")
+                path = f"runs/{date_key}/{slot}/arbiter/{run_id}.json"
+                upload_bytes(
+                    path,
+                    json.dumps(payload_s3, ensure_ascii=False).encode("utf-8"),
+                    content_type="application/json",
+                )
+                s3_path = path
+            except Exception:
+                s3_path = None
+
+        if os.getenv("ARB_LOG_TO_DB", "1") in {"1", "true", "True"}:
+            try:
+                from ..infra.db import upsert_arbiter_reasoning, upsert_arbiter_selfcritique
+
+                upsert_arbiter_reasoning(
+                    run_id=run_id,
+                    mode=mode,
+                    analysis=(analysis.raw if analysis else {}),
+                    context=context_bundle or {},
+                    tokens_estimate=tokens_estimate,
+                    context_ref=context_hash,
+                    s3_path=s3_path,
+                )
+                if critique:
+                    upsert_arbiter_selfcritique(
+                        run_id=run_id,
+                        recommendation=critique.recommendation,
+                        probability_delta=critique.probability_adjustment,
+                        payload=critique.raw,
+                    )
+            except Exception:
+                pass
         return ArbiterFullDecision(
             mode=mode,
             analysis=analysis,
