@@ -293,7 +293,12 @@ class InvestmentArbiter:
             )
             model = os.getenv("OPENAI_MODEL_ANALYST", os.getenv("OPENAI_MODEL_MASTER"))
             raw = self._analyst_llm(system_prompt, user_prompt, model=model, temperature=0.2)
-            report = self._parse_analyst_response(raw, planned_side, base_proba_up)
+            if not raw or raw.get("status") == "error":
+                return None
+            from ..reasoning.schemas import ArbiterAnalystResponse
+
+            parsed = ArbiterAnalystResponse(**raw).sanitized()
+            report = self._parse_analyst_response(parsed.model_dump(), planned_side, base_proba_up)
             try:
                 metrics.push_values(
                     job="investment-analyst",
@@ -312,6 +317,10 @@ class InvestmentArbiter:
         try:
             res = self._critique_agent.run({"analysis": analysis.raw, "context": context_bundle})
             out = res.output if isinstance(res.output, dict) else {}
+            from ..reasoning.schemas import CritiqueResponse
+
+            parsed = CritiqueResponse(**out).sanitized()
+            out = parsed.model_dump()
             return CritiqueReport(
                 counterarguments=[str(x) for x in out.get("counterarguments", [])],
                 invalidators=[str(x) for x in out.get("invalidators", [])],

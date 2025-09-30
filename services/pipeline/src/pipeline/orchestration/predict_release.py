@@ -469,11 +469,17 @@ def predict_release(
     )
     if arbiter_analysis:
         msg.append(
-            f"<b>Аналитик</b>: {arbiter_analysis.scenario} @ {arbiter_analysis.probability_pct:.1f}% — {arbiter_analysis.explanation[:180]}"
+            f"<b>Аналитик</b>: {arbiter_analysis.scenario} @ {arbiter_analysis.probability_pct:.1f}%"
+        )
+        msg.append(
+            f"• Макро: {arbiter_analysis.macro_summary[:160]}"
+        )
+        msg.append(
+            f"• Техника: {arbiter_analysis.technical_summary[:160]}"
         )
         if arbiter_analysis.contradictions:
             msg.append(
-                "Противоречия: " + "; ".join(arbiter_analysis.contradictions[:3])
+                "• Противоречия: " + "; ".join(arbiter_analysis.contradictions[:2])
             )
     if arbiter_critique:
         msg.append(

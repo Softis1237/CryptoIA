@@ -101,7 +101,14 @@ pytest services/pipeline/tests/test_dynamic_params.py \
 - `ARB_ANALYST_ENABLED=0` — полный откат к legacy-арбитер. Используйте при инцидентах с LLM.
 - `ARB_ANALYST_AB_PERCENT=50` — раскат цепочки рассуждений на 50% запусков (по run_id).
 - Метрики Prometheus: `context_builder_tokens`, `context_builder_latency_ms`, `investment-analyst_probability_pct`, `self-critique_probability_delta`.
-- Координаты логов (при включённых миграциях v3): таблицы `arbiter_reasoning`, `arbiter_selfcritique`.
+- Координаты логов (при включённых миграциях v3): таблицы `arbiter_reasoning`, `arbiter_selfcritique`, S3 `runs/<date>/<slot>/arbiter/`.
+- Памятки: промпт-тюнинг — `docs/ANALYST_TUNING_GUIDE.md`, контроль LLM — `docs/LLM_FAILSAFE.md`.
+
+### 4.3 Бэктест и бумажная торговля
+
+- Полная инструкция: `docs/BACKTEST_RUNBOOK.md`.
+- Paper trading: `docs/PAPER_TRADING_RUNBOOK.md`.
+- Live-cutover: `docs/LIVE_TRADING_CHECKLIST.md`.
 
 ### 4.2 Бэктест Красной Команды
 ```bash
